@@ -97,7 +97,8 @@ while IFS= read -r line; do
     path=${line#?? }
     case "$c1$c2" in
         " "?|?" "|?R) continue ;;
-        DA) run chezmoi forget --force --no-tty "$HOME/$path" || fail "Konnte $path nicht aus der Quelle entfernen" capture ;;
+        DA) chezmoi source-path "$HOME/$path" >/dev/null 2>&1 || continue
+            run chezmoi forget --force --no-tty "$HOME/$path" || fail "Konnte $path nicht aus der Quelle entfernen" capture ;;
         *)
             case "$(chezmoi source-path "$HOME/$path" 2>/dev/null)" in
                 *.tmpl) printf '%s\n' "$path" >>"$work/templates"; continue ;;
