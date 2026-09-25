@@ -1,13 +1,25 @@
 #!/bin/sh
-# chezmoi-hound-act - the two things a count of dotfile drift makes you want to
-# do, behind the panel's two buttons.
+# chezmoi-hound-act - the things a count of dotfile drift makes you want to
+# do, behind the panel's buttons.
 #
 #   chezmoi-hound-act commit [--source DIR] [--message TEXT | --message-file PATH]
+#                            [--claude-paths "P..."]
 #       capture the edits this machine has made to managed targets into the
 #       source, commit them, and commit whatever else the source repo's own
 #       working tree is holding. A target deleted here is dropped from the
 #       source as well (`chezmoi forget`), because `add` cannot express a
-#       deletion and the count would otherwise never come down.
+#       deletion and the count would otherwise never come down. With
+#       --claude-paths, the files under those paths that chezmoi neither
+#       manages nor ignores are added first and staged with the commit.
+#
+#   chezmoi-hound-act pull [--source DIR]
+#       `chezmoi update`: pull the remote's commits and apply them. Refused
+#       while any managed target has drifted here, because applying would
+#       overwrite that edit; capture it first.
+#
+#   chezmoi-hound-act scripts [--source DIR]
+#       run the run scripts chezmoi marks as due (`chezmoi apply --include
+#       scripts`), and nothing else: no file target is written.
 #
 #   chezmoi-hound-act push [--source DIR] [git push args]
 #       push the commits the remote has not seen
@@ -32,15 +44,17 @@
 #       is committed: the .chezmoiignore edit is a source change like any other,
 #       so it lands in the next capture's diff and a commit still takes a press.
 #
-# The four actions are button presses, so none of them prompts. None is
-# dangerous in the way that would need one: a commit is local and reversible
-# (the previous HEAD is in the reflog and nothing has been pushed), and the push
-# only ever goes to the branch's existing upstream. This script never
-# force-pushes, never changes a remote, never touches a branch other than the
-# checked-out one, and never deletes a file in $HOME: a target already gone from
-# here is only dropped from the source state, and git keeps the removed file.
-# `ignore` writes one file, and only inside the source repo: .chezmoiignore.
-# Nothing in $HOME is created, changed or removed by this script at all.
+# The actions are button presses, so none of them prompts. A commit is local
+# and reversible (the previous HEAD is in the reflog and nothing has been
+# pushed), and the push only ever goes to the branch's existing upstream. This
+# script never force-pushes, never changes a remote, never touches a branch
+# other than the checked-out one, and never deletes a file in $HOME: a target
+# already gone from here is only dropped from the source state, and git keeps
+# the removed file. `ignore` writes one file, and only inside the source repo:
+# .chezmoiignore. Only `pull` and `scripts` change $HOME: `pull` applies the
+# source and refuses while anything here has drifted, `scripts` runs the due
+# scripts and writes no file target. chezmoi runs without a TTY for both, so a
+# target it would have to ask about fails the run instead of being overwritten.
 #
 # It prints a short log, which the panel shows. It does not refresh the badge:
 # the widget re-runs its own check when this exits.
@@ -65,10 +79,12 @@ messagefile=""
 ai=""
 probe=""
 sha=""
+claude_paths=""
+adopt=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        commit|push|suggest|undo|ignore)
+        commit|push|suggest|undo|ignore|pull|scripts)
             [ -n "$action" ] || action="$1"
             shift
             ;;
@@ -106,6 +122,11 @@ while [ $# -gt 0 ]; do
 "
             shift
             ;;
+        --claude-paths)
+            claude_paths="${2:-}"
+            adopt=yes
+            shift 2
+            ;;
         --ai)
             ai="${2:-}"
             shift 2
@@ -121,7 +142,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$action" ]; then
-    echo "usage: chezmoi-hound-act commit | push | suggest | ignore [--source DIR] [--path TARGET]... [--dry-run]"
+    echo "usage: chezmoi-hound-act commit | push | pull | scripts | suggest | ignore [--source DIR] [--path TARGET]... [--dry-run]"
     exit 2
 fi
 
@@ -221,6 +242,16 @@ status_paths() {
         esac
         printf '%s\n' "${line#?? }"
     done
+}
+
+claude_unmanaged() {
+    set -f
+    for p in $claude_paths; do
+        case "$p" in "~/"*) p="$HOME/${p#??}" ;; esac
+        [ -e "$p" ] || continue
+        chez unmanaged -- "$p" 2>/dev/null
+    done | sort -u
+    set +f
 }
 
 paths_now() {
@@ -677,6 +708,22 @@ case "$action" in
         : >"$work/left"
         captured=0
         removed=0
+        adopted=0
+
+        if [ -n "$adopt" ]; then
+            claude_unmanaged >"$work/claude"
+            while IFS= read -r path; do
+                [ -n "$path" ] || continue
+                if chez add "$HOME/$path" >/dev/null 2>&1 &&
+                   src=$(chez source-path "$HOME/$path" 2>/dev/null) &&
+                   gitrepo add -- "$src" >/dev/null 2>&1; then
+                    printf 'übernommen: %s\n' "$path" >>"$work/captured"
+                    adopted=$((adopted + 1))
+                else
+                    printf 'nicht übernommen: %s\n' "$path" >>"$work/left"
+                fi
+            done <"$work/claude"
+        fi
 
         # chezmoi status, one drifting target at a time. The count is read again
         # here rather than trusted from the badge, because the badge may be a few
@@ -905,6 +952,39 @@ case "$action" in
         fi
         ;;
 
+    pull)
+        drift=$(status_paths | grep -c .)
+        if [ "$drift" -gt 0 ]; then
+            printf 'Holen abgelehnt: %s lokal geänderte Datei(en) würde chezmoi update überschreiben. Erst übernehmen.\n' "$drift"
+            exit 4
+        fi
+        before=$(gitrepo rev-parse HEAD 2>/dev/null) || before=""
+        if ! GIT_TERMINAL_PROMPT=0 chez update --no-tty </dev/null; then
+            echo "chezmoi update ist fehlgeschlagen"
+            exit 1
+        fi
+        got=$(gitrepo rev-list --count "$before..@{u}" 2>/dev/null) || got="?"
+        printf '%s Commit(s) geholt und angewendet\n' "$got"
+        ;;
+
+    scripts)
+        due=$(chez status 2>/dev/null | while IFS= read -r line; do
+            [ "$(printf '%s' "$line" | cut -c2)" = R ] || continue
+            case "$(basename "$(chez source-path "$HOME/${line#?? }" 2>/dev/null)")" in
+                run_once_*|run_onchange_*) printf '%s\n' "${line#?? }" ;;
+            esac
+        done | grep -c .)
+        if [ "$due" -eq 0 ]; then
+            echo "keine fälligen Skripte"
+            exit 0
+        fi
+        if ! chez apply --no-tty --include scripts </dev/null; then
+            echo "die Skripte sind fehlgeschlagen"
+            exit 1
+        fi
+        printf '%s Skript(e) ausgeführt\n' "$due"
+        ;;
+
     undo)
         # Taking a commit back. Two ways to do it, and which one is honest
         # depends on whether the remote has the commit: a commit nobody else has
@@ -1005,7 +1085,7 @@ case "$action" in
         ;;
 
     *)
-        echo "usage: chezmoi-hound-act commit | push | suggest | ignore | undo --commit SHA [--source DIR] [--path TARGET]... [--dry-run] [--message TEXT] [--ai COMMAND]"
+        echo "usage: chezmoi-hound-act commit | push | pull | scripts | suggest | ignore | undo --commit SHA [--source DIR] [--path TARGET]... [--dry-run] [--message TEXT] [--ai COMMAND] [--claude-paths PATHS]"
         exit 2
         ;;
 esac
