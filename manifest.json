@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.dadofsambonzuki.chezmoi-hound",
+  "id": "enisbu.chezmoi-hound",
   "name": "Chezmoi Hound",
-  "version": "1.1.7",
-  "author": "Nathan",
+  "version": "1.2.0-enisbu.1",
+  "author": "Enis Budancamanak",
   "license": "MIT",
-  "homepage": "https://github.com/dadofsambonzuki/chezmoi-hound",
+  "homepage": "https://github.com/enisbu/omarchy-chezmoi-hound",
   "description": "A bar count of dotfile drift that hunts it down. It adds up what this machine has edited and the source has not captured, what the source repo has not committed, and what the remote has not seen - then the panel names the items and offers to push them or capture and commit them.",
   "kinds": [
     "bar-widget"

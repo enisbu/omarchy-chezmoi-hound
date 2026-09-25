@@ -22,8 +22,8 @@ import QtQuick.Controls as QQC
 // installed; the widget itself never shells out to git.
 Panel {
   id: root
-  moduleName: "io.github.dadofsambonzuki.chezmoi-hound"
-  ipcTarget: "io.github.dadofsambonzuki.chezmoi-hound"
+  moduleName: "enisbu.chezmoi-hound"
+  ipcTarget: "enisbu.chezmoi-hound"
   // manageIpc: false because this file owns the single IpcHandler the target
   // allows, so it can answer status()/geometry() as well as open/close.
   manageIpc: false
@@ -1473,7 +1473,7 @@ Panel {
   // points the buttons call, so an action can be exercised without a synthetic
   // click.
   IpcHandler {
-    target: "io.github.dadofsambonzuki.chezmoi-hound"
+    target: "enisbu.chezmoi-hound"
 
     function open(): void { root.open() }
     function close(): void { root.close() }
