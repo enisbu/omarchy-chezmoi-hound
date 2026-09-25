@@ -43,7 +43,8 @@ Panel {
   function summary(name) {
     var s = side(name)
     var parts = []
-    if (s.local.length > 0) parts.push(s.local.length + " geändert")
+    var changed = rows(name).filter(function (r) { return !r.incoming }).length
+    if (changed > 0) parts.push(changed + " geändert")
     if (s.commits > 0) parts.push(s.commits + " eingehend")
     else if (s.incoming.length > 0) parts.push(s.incoming.length + " anzuwenden")
     if (s.unpushed > 0) parts.push(s.unpushed + " ausgehend")
@@ -51,12 +52,21 @@ Panel {
     return parts.length > 0 ? parts.join(" · ") : "synchron"
   }
 
+  function unit(path) { return path.split("/").slice(0, 3).join("/") }
+
   function rows(name) {
     var s = side(name)
     var out = []
-    for (var i = 0; i < s.local.length; i++) out.push({ path: s.local[i], incoming: false })
+    var seen = {}
+    function add(path, incoming) {
+      var key = (incoming ? "in:" : "local:") + unit(path)
+      if (seen[key]) { seen[key].count++; return }
+      seen[key] = { path: unit(path), incoming: incoming, count: 1 }
+      out.push(seen[key])
+    }
+    for (var i = 0; i < s.local.length; i++) add(s.local[i], false)
     for (var j = 0; j < s.incoming.length; j++)
-      if (s.local.indexOf(s.incoming[j]) === -1) out.push({ path: s.incoming[j], incoming: true })
+      if (s.local.indexOf(s.incoming[j]) === -1) add(s.incoming[j], true)
     return out
   }
 
@@ -298,7 +308,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           textFormat: Text.PlainText
-          text: "~/" + modelData.path
+          text: "~/" + modelData.path + (modelData.count > 1 ? "  (" + modelData.count + ")" : "")
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
