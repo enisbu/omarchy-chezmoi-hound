@@ -152,9 +152,9 @@ trap 'rm -rf "$work"' EXIT INT TERM
 # ---- 1. edited here, not captured, and scripts that are due -----------------
 # chezmoi status prints two state columns, then the path from column 4. The
 # second column compares the target against the source state, where 'R' marks a
-# run script that is merely due - a wrapper can be permanently due, and that is
-# not file drift, so it is counted apart as a script. Anything else in that
-# column is drift.
+# run script that is merely due - a plain run_ wrapper is permanently due, and
+# that is not file drift, so only run_once_ and run_onchange_ scripts are
+# counted, apart, as scripts. Anything else in that column is drift.
 home=0
 scripts=0
 if chez status >"$work/status" 2>"$work/status.err"; then
@@ -164,6 +164,10 @@ if chez status >"$work/status" 2>"$work/status.err"; then
         col=$(printf '%s' "$line" | cut -c2)
         [ "$col" = " " ] && continue
         if [ "$col" = "R" ]; then
+            case "$(basename "$(chez source-path "$HOME/${line#?? }" 2>/dev/null)")" in
+                run_once_*|run_onchange_*) ;;
+                *) continue ;;
+            esac
             scripts=$((scripts + 1))
             [ "$scripts" -le "$LIMIT" ] && printf 'script\t%s\n' "${line#?? }" >>"$work/scripts"
             continue
