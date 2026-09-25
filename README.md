@@ -1,5 +1,52 @@
 # Chezmoi Hound
 
+## Dieser Fork
+
+`enisbu.chezmoi-hound` ist ein Fork von [dadofsambonzuki/chezmoi-hound](https://github.com/dadofsambonzuki/chezmoi-hound)
+(v1.1.7, MIT, Autor Nathan) für zwei Omarchy-Rechner, die ihre Dotfiles und `~/.claude` über chezmoi teilen.
+Die Oberfläche ist deutsch. Die Zahl in der Bar ist hier die Summe aus sechs Teilen:
+
+| Teil | Bedeutung | Aktion im Panel |
+| --- | --- | --- |
+| Eingehend | Commits im Remote, die hier noch nicht geholt sind | **Holen** = `chezmoi update` |
+| Lokal geändert | verwaltete Dateien, hier geändert, nicht in der Quelle | **Übernehmen…**, **Ignorieren…** |
+| Claude neu | Dateien unter den Claude-Pfaden, die chezmoi weder verwaltet noch ignoriert | **Übernehmen…** = `chezmoi add` plus Commit |
+| Fällige Skripte | `run_once_`/`run_onchange_`-Skripte mit `R` in `chezmoi status` | **Skripte ausführen** = `chezmoi apply --include scripts` |
+| Nicht gepusht | lokale Commits, die das Remote nicht hat | **Pushen** |
+| Quellrepo uncommitted | Änderungen im Arbeitsbaum der Quelle | **Committen…** |
+
+Eingehendes steht mit einem Pfeil in Akzentfarbe vor der Zahl: Pfeil heißt holen, ohne Pfeil heißt übernehmen oder pushen.
+
+**Holen verweigert, solange etwas lokal geändert ist.** `chezmoi update` würde die Änderung überschreiben, also
+meldet das Panel „erst übernehmen“ und ändert nichts. chezmoi läuft dabei ohne TTY, eine Rückfrage bricht ab statt zu überschreiben.
+
+**Abgleich mit dem Remote.** Die normale Prüfung bleibt offline. Alle `fetchSeconds` (Standard 900) und beim
+Öffnen des Panels läuft `chezmoi-hound-check --fetch` (`git fetch` mit Timeout).
+
+**Peer.** Im selben Takt liest das Panel per SSH die Prüfung des anderen Rechners
+(`ssh -o BatchMode=yes -o ConnectTimeout=4 <peer> …/chezmoi-hound-check`) und zeigt dessen Stand oder „offline“
+mit dem zuletzt gesehenen Zeitpunkt. Der Peer zählt nicht in die eigene Zahl, nur ein kleiner Punkt in der Bar
+zeigt, dass er ungepushte Commits oder lokale Änderungen hat.
+
+Zusätzliche Einstellungen:
+
+| Einstellung | Standard | Bedeutung |
+| --- | --- | --- |
+| `fetchSeconds` | `900` | Abstand der Abgleiche mit dem Remote, 300 bis 86400 |
+| `peerHost` | `auto` | SSH-Host des anderen Rechners; `auto` nimmt ihn aus der chezmoi-Variable `role` (laptop zu desktop, desktop zu laptop), leer schaltet ab |
+| `claudePaths` | `~/.claude/skills ~/.claude/hooks ~/.claude/projects/-home-enisdev/memory ~/.claude/CLAUDE.md ~/.claude/settings.json` | Pfade, in denen neue Dateien gezählt werden, mit Leerzeichen getrennt; leer schaltet ab |
+
+Installation: `omarchy plugin add https://github.com/enisbu/omarchy-chezmoi-hound.git --enable --yes`,
+Entfernen: `omarchy plugin remove enisbu.chezmoi-hound --yes`.
+
+Das Zeilenprotokoll ist jetzt `version 2`: neue Schlüssel `behind`, `scripts`, `claude`, `all`, `fetched`,
+`incoming`, `script`, `claudefile`, im Peer-Modus `peer*`. `total` bleibt home + repo + unpushed wie in Version 1.
+
+Der Rest dieser Datei ist die Doku des Originals mit den englischen Button-Namen: Capture and commit heißt hier
+Übernehmen, Push heißt Pushen, Add to .chezmoiignore heißt Ignorieren, Suggest heißt Vorschlag, Full details heißt Details.
+
+## Original
+
 An [Omarchy](https://omarchy.org/) plugin that sniffs out **Dotfile Drift** and helps you stay synced. **Woof!**
 
 Chezmoi Hound monitors for dotfile drift via [Chezmoi](https://www.chezmoi.io/) and pops one number in the
@@ -9,7 +56,7 @@ Omarchy bar representing:
  - _repo_: paths the source repo's own working tree is holding uncommitted
  - _unpushed_: commits in the source repo the remote has not seen
 
-The number on the bar = home + repo + unpushed.
+The number on the bar = home + repo + unpushed (in this fork plus behind, scripts and claude, see above).
 
 <img src="preview.png" width="50%" alt="The Chezmoi Hound panel: the Dotfile Drift section, the latest commits, and the actions in the foot">
 
@@ -20,7 +67,7 @@ Clicking the number shows you a list of the drifted files and/or local commits, 
 Omarchy 4 (Quattro) with the Omarchy shell:
 
 ```sh
-omarchy plugin add https://github.com/dadofsambonzuki/chezmoi-hound.git --enable --yes
+omarchy plugin add https://github.com/enisbu/omarchy-chezmoi-hound.git --enable --yes
 ```
 
 That clones the plugin, registers it with the shell and enables it. The count
@@ -60,7 +107,7 @@ button is not offered at all.
 ## Remove
 
 ```sh
-omarchy plugin remove io.github.dadofsambonzuki.chezmoi-hound --yes
+omarchy plugin remove enisbu.chezmoi-hound --yes
 ```
 
 That unregisters the widget and deletes the plugin directory. Nothing else on the
@@ -73,7 +120,7 @@ layout in `~/.config/omarchy/shell.json`, which Omarchy writes itself.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | **chezmoi source directory** | *(empty)* | Empty means "chezmoi's own configured source". Set it when the tree is one you pass to `chezmoi --source`. |
-| **Re-check every (seconds)** | `300` | How often the widget re-reads the drift. 60–3600; a lower value costs more `chezmoi status` runs, not more network — this plugin never fetches. |
+| **Re-check every (seconds)** | `300` | How often the widget re-reads the drift. 60–3600; a lower value costs more `chezmoi status` runs, not more network: only the separate fetch cadence (`fetchSeconds`) and opening the panel fetch. |
 | **When everything is in sync** | `Hide` | Hide keeps a permanent zero off the bar. Show leaves the count visible always — a zero is drawn in the same colour as any other count, so it reads as a number rather than as a faded widget. |
 | **AI command for commit messages** | *(empty)* | Empty uses this machine's default coding agent — the one `omarchy default agent` reports. Set it to pin one agent (say `codex`), or to use a command of your own. |
 
@@ -195,11 +242,11 @@ The plugin is two POSIX `sh` scripts plus one QML file:
 - They run `chezmoi status`, `chezmoi source-path`, `chezmoi add`, and plain
   `git` inside your source repo. Nothing else: nothing runs with escalated
   privileges, there is no `eval`, nothing is written outside the source repo, and
-  nothing else touches the network — the one thing here that leaves the machine
-  is a **Suggest** run, to your agent's own provider.
+  nothing else touches the network except the fetch, the peer check over SSH,
+  **Holen** (`chezmoi update`) and a **Suggest** run, to your agent's own provider.
 - A malformed or failed reading leaves the previous number on screen and says why
   in the panel; it never empties the badge or invents a number.
-- A reading is refused outright unless the three counts add up to the total.
+- A reading is refused outright unless the counts add up to `total` and `all`.
 - **Suggest** is the only part that runs anything beyond `chezmoi` and `git`: it
   pipes the drift to your default agent's *non-interactive* mode — `hermes -z`,
   `claude -p`, `codex exec`, `gemini -p`, `opencode run` — and does nothing at

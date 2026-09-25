@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.0-enisbu.1
+
+- Fork unter `enisbu.chezmoi-hound`, Oberfläche auf Deutsch.
+- **Eingehend**: die Prüfung zählt Commits im Upstream, die hier fehlen (`behind`, `incoming`).
+  `--fetch` holt vorher mit Timeout; das Widget ruft es alle `fetchSeconds` (Standard 900) und beim Öffnen auf.
+- **Holen** = `chezmoi update`, verweigert mit Meldung (Exit 4), solange Dateien lokal geändert sind.
+- **Fällige Skripte**: `run_once_`/`run_onchange_`-Skripte mit `R` zählen als `scripts`;
+  **Skripte ausführen** = `chezmoi apply --include scripts`, schreibt keine Datei-Ziele.
+- **Claude neu**: `chezmoi unmanaged` über die Pfade aus `claudePaths`; **Übernehmen** macht `chezmoi add`,
+  staged die neuen Quelldateien und committet über den bestehenden Commit-Ablauf.
+- **Peer**: `--peer auto|HOST` liest die Prüfung des anderen Rechners per SSH, offline nach spätestens rund 5 s.
+  Zählt nicht in die eigene Zahl, ein Punkt in der Bar zeigt offene Änderungen dort.
+- Pfeil in Akzentfarbe vor der Zahl, wenn Eingehendes dabei ist.
+- Panel-Reihenfolge: Eingehend, Lokal geändert, Claude neu, Fällige Skripte, Nicht gepusht,
+  Quellrepo uncommitted, Peer, Verlauf. Nicht gepusht und Verlauf sind getrennte Abschnitte.
+- Protokoll `version 2`, abwärtskompatibel: neue Schlüssel, `total` unverändert, neue Summe `all`.
+
 ## 1.1.7
 
 - **Add to .chezmoiignore**, beside **Capture and commit**. Not every drifted
