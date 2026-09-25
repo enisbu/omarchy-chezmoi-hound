@@ -1,91 +1,10 @@
 #!/bin/sh
-# chezmoi-hound-check - how far this machine's dotfiles have drifted.
-#
-# One number, made of six independent parts:
-#
-#   home      managed targets this machine has edited and the source has not
-#             captured yet (chezmoi status, second column)
-#   repo      paths the source repo's own working tree is holding uncommitted
-#   unpushed  commits in the source repo the remote has not seen
-#   behind    commits the remote has that this checkout has not pulled
-#   scripts   run scripts chezmoi marks as due ('R' in the second column)
-#   claude    files under the watched ~/.claude paths that chezmoi neither
-#             manages nor ignores
-#
-# Only --fetch touches the network, so without it "behind" means "behind the
-# remote as of the last fetch", and "unpushed" means "the remote has not been
-# told", not "the remote agrees".
-#
-# The reading also carries the source repo's last five commits, newest first.
-# The panel shows those where it used to show the last action's own log: the
-# commit history is a fact about the dotfiles, the log was a fact about the last
-# button press, and only one of the two is worth a permanent row.
-#
-# Output is a line protocol, one record per line, "key<TAB>value", in any order,
-# so this stays a POSIX shell script with no jq and no JSON parser:
-#
-#   version 2
-#   stamp    <local date and time>
-#   source   <source directory>
-#   branch   <checked-out branch>
-#   upstream <upstream ref>          (absent when the branch has no upstream)
-#   fetched  <local date and time>   last fetch of the source repo (if any)
-#   home     <count>   repo <count>   unpushed <count>   total <count>
-#   behind   <count>   scripts <count>   claude <count>   all <count>
-#            total is home + repo + unpushed, as in version 1; all is the sum
-#            of all six parts
-#   file     <path>          a target that differs in $HOME      (up to --limit)
-#   commit   <sha> <subject> a commit the remote has not seen    (up to --limit)
-#   incoming <sha> <subject> a commit the remote has, not pulled (up to --limit)
-#   script   <path>          a run script that is due            (up to --limit)
-#   claudefile <path>        an untracked file under ~/.claude   (up to --limit)
-#   repofile <XY> <path>     an uncommitted path in the source   (up to --limit)
-#   recent   <sha> <when> <subject>  commit in the source repo: the last five,
-#                                    or every commit the remote has not seen
-#                                    when there are more than five (ceiling 20)
-#   note     <text>          something worth saying, not an error
-#   error    <text>          the reading is incomplete
-#
-# Exit 0 when the reading is complete, 1 when chezmoi or the source tree could
-# not be read at all (the records printed before that are still valid).
-#
-#   --source DIR   the chezmoi source directory, for a tree that is not the
-#                  configured one (the tree you otherwise pass to
-#                  `chezmoi --source DIR`)
-#   --limit N      cap on items listed per section (default 10)
-#   --fetch        `git fetch` the source repo first, bounded by a timeout
-#   --claude-paths "P..."  whitespace-separated paths to look for untracked
-#                  files in (default: ~/.claude/skills, hooks, the home
-#                  project's memory, CLAUDE.md, settings.json); "" disables
-#   --peer HOST    instead of reading this machine, read HOST's own check over
-#                  ssh and print it as peer* records; "auto" picks the other
-#                  machine from chezmoi's `role` (laptop <-> desktop)
-#   --render       print the reading as text instead, for a human to read
+# chezmoi-hound-check: dotfile drift per side as key<TAB>value records, see README.
 
 set -u
 
-LIMIT=10
-SRC=""
-RENDER=0
 FETCH=0
-PEER=""
-PEER_SET=0
-CLAUDE_SET=0
-CLAUDE_PATHS=""
-
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --source) SRC="${2:-}"; shift 2 ;;
-        --limit)  LIMIT="${2:-10}"; shift 2 ;;
-        --render) RENDER=1; shift ;;
-        --fetch)  FETCH=1; shift ;;
-        --peer)   PEER="${2:-}"; PEER_SET=1; shift 2 ;;
-        --claude-paths) CLAUDE_PATHS="${2:-}"; CLAUDE_SET=1; shift 2 ;;
-        *) shift ;;
-    esac
-done
-
-case "$LIMIT" in ''|*[!0-9]*) LIMIT=10 ;; esac
+[ "${1:-}" = "--fetch" ] && FETCH=1
 
 fail() {
     printf 'error\t%s\n' "$1"
@@ -95,250 +14,107 @@ fail() {
 command -v chezmoi >/dev/null 2>&1 || fail "chezmoi ist nicht im PATH"
 command -v git >/dev/null 2>&1 || fail "git ist nicht im PATH"
 
-# One place that decides how chezmoi is invoked, so --source cannot be
-# remembered in one call and forgotten in the next.
-chez() {
-    if [ -n "$SRC" ]; then
-        chezmoi --source "$SRC" "$@"
-    else
-        chezmoi "$@"
-    fi
-}
-
-if [ "$PEER_SET" = 1 ]; then
-    if [ "$PEER" = "auto" ]; then
-        case "$(chez execute-template '{{ .role }}' 2>/dev/null)" in
-            laptop)  PEER=desktop ;;
-            desktop) PEER=laptop ;;
-            *)       PEER="" ;;
-        esac
-    fi
-    printf 'version\t2\n'
-    if [ -z "$PEER" ]; then
-        printf 'peerstate\tdisabled\n'
-        exit 0
-    fi
-    printf 'peer\t%s\n' "$PEER"
-    out=$(timeout -k 1 10 ssh -o BatchMode=yes -o ConnectTimeout=4 -- "$PEER" \
-        '~/.config/omarchy/plugins/enisbu.chezmoi-hound/bin/chezmoi-hound-check --limit 0' 2>/dev/null)
-    rc=$?
-    if [ "$rc" = 255 ] || [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
-        printf 'peerstate\toffline\n'
-        exit 0
-    fi
-    if ! printf '%s\n' "$out" | grep -q '^stamp	'; then
-        printf 'peerstate\tnohound\n'
-        exit 0
-    fi
-    printf 'peerstate\tonline\n'
-    printf '%s\n' "$out" | sed -n -E 's/^(stamp|branch|home|repo|unpushed|behind|scripts|claude|all|total|error)\t/peer\1\t/p'
-    exit 0
-fi
-
-# The git work happens in the source tree. `chezmoi source-path` names the
-# source chezmoi is *configured* for, which is the wrong answer when we were
-# pointed at a tree explicitly, so an explicit --source wins.
-if [ -n "$SRC" ]; then
-    srcdir=$SRC
-else
-    srcdir=$(chezmoi source-path 2>/dev/null) || srcdir=""
-    [ -n "$srcdir" ] || srcdir="$HOME/.local/share/chezmoi"
-fi
+srcdir=$(chezmoi source-path 2>/dev/null) || srcdir=""
+[ -n "$srcdir" ] || srcdir="$HOME/.local/share/chezmoi"
 [ -d "$srcdir" ] || fail "kein Quellverzeichnis unter $srcdir"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/chezmoi-hound.XXXXXX") || fail "kein temporäres Verzeichnis möglich"
 trap 'rm -rf "$work"' EXIT INT TERM
 
-# ---- 1. edited here, not captured, and scripts that are due -----------------
-# chezmoi status prints two state columns, then the path from column 4. The
-# second column compares the target against the source state, where 'R' marks a
-# run script that is merely due - a plain run_ wrapper is permanently due, and
-# that is not file drift, so only run_once_ and run_onchange_ scripts are
-# counted, apart, as scripts. Anything else in that column is drift.
-home=0
+side_of() {
+    case "$1" in
+        .claude|.claude/*) echo claude ;;
+        *) echo chezmoi ;;
+    esac
+}
+
+target_of() {
+    case "$1" in
+        .*) printf '%s\n' "$1"; return ;;
+    esac
+    printf '%s\n' "$1" | sed -E \
+        -e 's#(^|/)((after|before|create|empty|encrypted|exact|executable|external|literal|modify|once|onchange|private|readonly|remove|run|symlink)_)+#\1#g' \
+        -e 's#(^|/)dot_#\1.#g' \
+        -e 's#\.(tmpl|literal|age|asc)$##'
+}
+
+emit_sourced() {
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        t=$(target_of "$p")
+        printf '%s\t%s\t%s\n' "$1" "$(side_of "$t")" "$t"
+    done
+}
+
+count_commits() {
+    for sha in $(git -C "$srcdir" rev-list "$2" 2>/dev/null); do
+        git -C "$srcdir" diff-tree --no-commit-id --name-only -r "$sha" 2>/dev/null |
+            while IFS= read -r p; do side_of "$(target_of "$p")"; done | sort -u
+    done | sort | uniq -c | while read -r n side; do
+        printf '%s\t%s\t%s\n' "$1" "$side" "$n"
+    done
+}
+
 scripts=0
-if chez status >"$work/status" 2>"$work/status.err"; then
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        [ "${#line}" -ge 4 ] || continue
-        col=$(printf '%s' "$line" | cut -c2)
-        [ "$col" = " " ] && continue
-        if [ "$col" = "R" ]; then
-            case "$(basename "$(chez source-path "$HOME/${line#?? }" 2>/dev/null)")" in
-                run_once_*|run_onchange_*) ;;
-                *) continue ;;
-            esac
-            scripts=$((scripts + 1))
-            [ "$scripts" -le "$LIMIT" ] && printf 'script\t%s\n' "${line#?? }" >>"$work/scripts"
-            continue
-        fi
-        home=$((home + 1))
-        [ "$home" -le "$LIMIT" ] && printf 'file\t%s\n' "${line#?? }" >>"$work/files"
-    done <"$work/status"
-else
-    fail "chezmoi status fehlgeschlagen: $(head -n 1 "$work/status.err" 2>/dev/null)"
-fi
+chezmoi status >"$work/status" 2>"$work/status.err" ||
+    fail "chezmoi status fehlgeschlagen: $(head -n 1 "$work/status.err")"
+while IFS= read -r line; do
+    [ "${#line}" -ge 4 ] || continue
+    c1=$(printf '%s' "$line" | cut -c1)
+    c2=$(printf '%s' "$line" | cut -c2)
+    path=${line#?? }
+    [ "$c2" = " " ] && continue
+    if [ "$c2" = "R" ]; then
+        case "$(basename "$(chezmoi source-path "$HOME/$path" 2>/dev/null)")" in
+            run_once_*|run_onchange_*) scripts=$((scripts + 1)) ;;
+        esac
+        continue
+    fi
+    if [ "$c1" = " " ]; then
+        printf 'incoming\t%s\t%s\n' "$(side_of "$path")" "$path"
+    else
+        printf 'local\t%s\t%s\n' "$(side_of "$path")" "$path"
+    fi
+done <"$work/status" >"$work/items"
 
-[ "$CLAUDE_SET" = 1 ] ||
-    CLAUDE_PATHS="~/.claude/skills ~/.claude/hooks ~/.claude/projects/$(printf '%s' "$HOME" | tr '/' '-')/memory ~/.claude/CLAUDE.md ~/.claude/settings.json"
-claude=0
-set -f
-for p in $CLAUDE_PATHS; do
-    case "$p" in "~/"*) p="$HOME/${p#??}" ;; esac
-    [ -e "$p" ] || continue
-    chez unmanaged -- "$p" 2>/dev/null
-done >"$work/claude.raw"
-set +f
-sort -u "$work/claude.raw" | while IFS= read -r line; do
-    [ -n "$line" ] && printf '%s\n' "$line"
-done >"$work/claude.list"
-claude=$(grep -c . "$work/claude.list")
-head -n "$LIMIT" "$work/claude.list" | sed 's/^/claudefile\t/' >"$work/claudefiles"
-
-# ---- 2. the source repo's own working tree, 3. and what it has not pushed ---
-repo=0
-unpushed=0
-behind=0
-branch=""
-upstream=""
-fetched=""
+for p in "$HOME/.claude/skills" "$HOME/.claude/hooks" "$HOME/.claude/projects/$(printf '%s' "$HOME" | tr '/' '-')/memory"; do
+    [ -e "$p" ] && chezmoi unmanaged -- "$p" 2>/dev/null
+done | while IFS= read -r p; do
+    [ -n "$p" ] && printf 'local\tclaude\t%s\n' "${p#"$HOME"/}"
+done >>"$work/items"
 
 if ! git -C "$srcdir" rev-parse --git-dir >/dev/null 2>&1; then
-    printf 'note\t%s\n' "$srcdir ist kein Git-Repo, gezählt wird nur, was sich in \$HOME geändert hat"
-    printf 'version\t2\n'
-    printf 'stamp\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
-    printf 'source\t%s\n' "$srcdir"
-    printf 'home\t%s\nrepo\t0\nunpushed\t0\ntotal\t%s\n' "$home" "$home"
-    printf 'behind\t0\nscripts\t%s\nclaude\t%s\nall\t%s\n' "$scripts" "$claude" "$((home + scripts + claude))"
-    cat "$work/files" "$work/scripts" "$work/claudefiles" 2>/dev/null
+    printf 'version\t3\n'
+    printf 'note\t%s ist kein Git-Repo\n' "$srcdir"
+    printf 'scripts\t%s\n' "$scripts"
+    sort -u "$work/items"
     exit 0
 fi
 
 if [ "$FETCH" = 1 ]; then
-    if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=8" \
-        timeout -k 2 20 git -C "$srcdir" fetch --quiet >/dev/null 2>"$work/fetch.err"; then
-        printf 'note\tAbgleich mit dem Remote fehlgeschlagen: %s\n' "$(head -n 1 "$work/fetch.err" 2>/dev/null)" >>"$work/notes"
-    fi
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=8" \
+        timeout -k 2 20 git -C "$srcdir" fetch --quiet >/dev/null 2>"$work/fetch.err" ||
+        printf 'note\tAbgleich fehlgeschlagen: %s\n' "$(head -n 1 "$work/fetch.err")" >>"$work/notes"
 fi
-fetchhead=$(git -C "$srcdir" rev-parse --git-path FETCH_HEAD 2>/dev/null) || fetchhead=""
-case "$fetchhead" in /*) ;; ?*) fetchhead="$srcdir/$fetchhead" ;; esac
-[ -n "$fetchhead" ] && [ -f "$fetchhead" ] &&
-    fetched=$(date -d "@$(stat -c %Y "$fetchhead")" '+%Y-%m-%d %H:%M:%S %z' 2>/dev/null)
 
-git -C "$srcdir" status --porcelain >"$work/repo" 2>/dev/null || true
-while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    repo=$((repo + 1))
-    [ "$repo" -le "$LIMIT" ] && printf 'repofile\t%s\n' "$line" >>"$work/repofiles"
-done <"$work/repo"
+git -C "$srcdir" -c core.quotePath=false status --porcelain -uall 2>/dev/null |
+    cut -c4- | sed -e 's/.* -> //' -e 's/^"//' -e 's/"$//' | emit_sourced local >>"$work/items"
 
-branch=$(git -C "$srcdir" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
-upstream=$(git -C "$srcdir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || upstream=""
+fetchhead=$(git -C "$srcdir" rev-parse --path-format=absolute --git-path FETCH_HEAD 2>/dev/null) || fetchhead=""
+fetched=""
+[ -f "$fetchhead" ] && fetched=$(date -d "@$(stat -c %Y "$fetchhead")" '+%Y-%m-%d %H:%M' 2>/dev/null)
 
-if [ -n "$upstream" ]; then
-    unpushed=$(git -C "$srcdir" rev-list --count '@{u}..HEAD' 2>/dev/null) || unpushed=0
-    git -C "$srcdir" log --format='%h %s' -n "$LIMIT" '@{u}..HEAD' 2>/dev/null |
-        while IFS= read -r c; do
-            [ -n "$c" ] && printf 'commit\t%s\n' "$c" >>"$work/commits"
-        done
-    behind=$(git -C "$srcdir" rev-list --count 'HEAD..@{u}' 2>/dev/null) || behind=0
-    git -C "$srcdir" log --format='%h %s' -n "$LIMIT" 'HEAD..@{u}' 2>/dev/null |
-        while IFS= read -r c; do
-            [ -n "$c" ] && printf 'incoming\t%s\n' "$c" >>"$work/incoming"
-        done
+if git -C "$srcdir" rev-parse --verify -q '@{u}' >/dev/null 2>&1; then
+    git -C "$srcdir" diff --name-only 'HEAD...@{u}' 2>/dev/null | emit_sourced incoming >>"$work/items"
+    count_commits commits 'HEAD..@{u}' >>"$work/items"
+    count_commits unpushed '@{u}..HEAD' >>"$work/items"
 else
-    printf 'note\t%s hat kein Upstream, nicht gepusht und eingehend bleiben unbekannt\n' "${branch:-the branch}" >>"$work/notes"
+    printf 'note\tkein Upstream\n' >>"$work/notes"
 fi
 
-# ---- 4. where the repo has just been ---------------------------------------
-# Newest first. Five is the window, widened when the remote is further behind, so
-# that every commit the remote has not seen is a visible row rather than a number
-# in a button; twenty is the ceiling because this is a panel, not a pager. sed in
-# --render turns the tabs back into the columns a person reads.
-recent_n=$((unpushed > 5 ? unpushed : 5))
-[ "$recent_n" -gt 20 ] && recent_n=20
-git -C "$srcdir" log --format='%h%x09%cr%x09%s' -n "$recent_n" 2>/dev/null |
-    while IFS= read -r c; do
-        [ -n "$c" ] && printf 'recent\t%s\n' "$c" >>"$work/recent"
-    done
-
-total=$((home + repo + unpushed))
-all=$((total + behind + scripts + claude))
-
-# ---- the reading -------------------------------------------------------------
-if [ "$RENDER" = 1 ]; then
-    printf 'Chezmoi Hound: %s offen  ·  %s\n' "$all" "$(date '+%Y-%m-%d %H:%M:%S')"
-    printf 'Quelle: %s   Branch: %s%s\n' "$srcdir" "${branch:-?}" "${upstream:+  ->  $upstream}"
-    [ -n "$fetched" ] && printf 'Letzter Abgleich mit dem Remote: %s\n' "$fetched"
-
-    if [ "$behind" -gt 0 ]; then
-        printf '\nEingehend, noch nicht geholt (%s):\n' "$behind"
-        sed 's/^incoming\t/  /' "$work/incoming" 2>/dev/null
-        if [ "$home" -gt 0 ]; then
-            printf '  -> erst die lokalen Änderungen übernehmen, Holen würde sie überschreiben\n'
-        else
-            printf '  -> im Panel holen, oder: chezmoi update\n'
-        fi
-    fi
-
-    if [ "$home" -gt 0 ]; then
-        printf '\nLokal geändert, nicht in der Quelle (%s):\n' "$home"
-        sed 's/^file\t/  /' "$work/files" 2>/dev/null
-        printf '  -> im Panel übernehmen, oder: chezmoi add <Pfad>\n'
-    fi
-
-    if [ "$claude" -gt 0 ]; then
-        printf '\nClaude neu, nicht verwaltet (%s):\n' "$claude"
-        sed 's/^claudefile\t/  /' "$work/claudefiles" 2>/dev/null
-        printf '  -> im Panel übernehmen, oder: chezmoi add <Pfad>\n'
-    fi
-
-    if [ "$scripts" -gt 0 ]; then
-        printf '\nFällige Skripte (%s):\n' "$scripts"
-        sed 's/^script\t/  /' "$work/scripts" 2>/dev/null
-        printf '  -> im Panel ausführen, oder: chezmoi apply --include scripts\n'
-    fi
-
-    if [ "$unpushed" -gt 0 ]; then
-        printf '\nNicht gepusht (%s):\n' "$unpushed"
-        git -C "$srcdir" log --oneline --no-decorate '@{u}..HEAD' 2>/dev/null | sed 's/^/  /'
-        printf '  -> im Panel pushen, oder: git -C %s push\n' "$srcdir"
-    fi
-
-    if [ "$repo" -gt 0 ]; then
-        printf '\nQuellrepo uncommitted (%s):\n' "$repo"
-        sed 's/^repofile\t/  /' "$work/repofiles" 2>/dev/null
-    fi
-
-    if [ -s "$work/recent" ]; then
-        printf '\nVerlauf:\n'
-        sed -e 's/^recent\t/  /' -e 's/\t/  /g' "$work/recent" 2>/dev/null
-    fi
-
-    if [ "$all" -eq 0 ]; then
-        printf '\n$HOME, Quelle und Remote sind gleich. Nichts zu tun.\n'
-    fi
-
-    cat "$work/notes" 2>/dev/null | sed 's/^note\t/Hinweis: /'
-    exit 0
-fi
-
-printf 'version\t2\n'
-printf 'stamp\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
-printf 'source\t%s\n' "$srcdir"
-printf 'branch\t%s\n' "$branch"
-[ -n "$upstream" ] && printf 'upstream\t%s\n' "$upstream"
+printf 'version\t3\n'
 [ -n "$fetched" ] && printf 'fetched\t%s\n' "$fetched"
-printf 'home\t%s\n' "$home"
-printf 'repo\t%s\n' "$repo"
-printf 'unpushed\t%s\n' "$unpushed"
-printf 'total\t%s\n' "$total"
-printf 'behind\t%s\n' "$behind"
 printf 'scripts\t%s\n' "$scripts"
-printf 'claude\t%s\n' "$claude"
-printf 'all\t%s\n' "$all"
-
-cat "$work/files" "$work/commits" "$work/incoming" "$work/scripts" "$work/claudefiles" \
-    "$work/recent" "$work/repofiles" "$work/notes" 2>/dev/null
-
+sort -u "$work/items"
+cat "$work/notes" 2>/dev/null
 exit 0
