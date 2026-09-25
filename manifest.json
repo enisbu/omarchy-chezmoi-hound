@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "enisbu.chezmoi-hound",
   "name": "Chezmoi Hound",
-  "version": "1.2.0-enisbu.1",
+  "version": "2.0.0-enisbu.1",
   "author": "Enis Budancamanak",
   "license": "MIT",
   "homepage": "https://github.com/enisbu/omarchy-chezmoi-hound",
-  "description": "A bar count of dotfile drift that hunts it down. It adds up what this machine has edited and the source has not captured, what the source repo has not committed or pushed, what the remote has that this machine has not pulled, due run scripts and new files under ~/.claude, and shows the other machine's state over SSH. The panel offers to pull, capture, commit, push and run scripts.",
+  "description": "Dotfile drift in two columns, chezmoi and Claude (~/.claude), each with one Sync button that captures local edits, commits, pulls with rebase, pushes and applies what came in for that side only. The bar shows one sync icon only while something is out of sync.",
   "kinds": [
     "bar-widget"
   ],
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Chezmoi Hound",
-    "description": "Dotfile drift across $HOME, the source repo, its remote and a peer machine, with pull, capture, commit, push and script actions.",
+    "description": "Sync icon while dotfiles drift; the panel splits chezmoi and Claude and syncs each side with one button.",
     "category": "System",
     "aliases": [
       "dotfiles",
@@ -24,75 +24,6 @@
       "drift"
     ],
     "allowMultiple": false,
-    "defaultSection": "right",
-    "defaults": {
-      "sourceDir": "",
-      "checkSeconds": 300,
-      "whenClean": "Hide",
-      "aiCommand": "",
-      "fetchSeconds": 900,
-      "peerHost": "auto",
-      "claudePaths": "~/.claude/skills ~/.claude/hooks ~/.claude/projects/-home-enisdev/memory ~/.claude/CLAUDE.md ~/.claude/settings.json"
-    },
-    "schema": [
-      {
-        "key": "sourceDir",
-        "type": "string",
-        "label": "chezmoi source directory",
-        "defaultValue": "",
-        "description": "Leave empty to use chezmoi's own configured source. Set it when the source is a tree you normally pass to `chezmoi --source`, such as ~/Projects/dotfiles."
-      },
-      {
-        "key": "aiCommand",
-        "type": "string",
-        "label": "AI command for commit messages",
-        "defaultValue": "",
-        "description": "Leave empty to use this machine's default coding agent, the one `omarchy default agent` reports. Supported for suggestions: hermes, claude, codex, gemini, opencode. Name one to force it instead, such as `codex`. Only used when the Suggest button is pressed."
-      },
-      {
-        "key": "checkSeconds",
-        "type": "integer",
-        "label": "Re-check every (seconds)",
-        "min": 60,
-        "max": 3600,
-        "step": 30,
-        "defaultValue": 300
-      },
-      {
-        "key": "fetchSeconds",
-        "type": "integer",
-        "label": "Fetch the remote every (seconds)",
-        "min": 300,
-        "max": 86400,
-        "step": 300,
-        "defaultValue": 900,
-        "description": "How often the source repo is fetched to count incoming commits. The normal re-check never touches the network; opening the panel also fetches."
-      },
-      {
-        "key": "whenClean",
-        "type": "enum",
-        "label": "When everything is in sync",
-        "options": [
-          "Hide",
-          "Show"
-        ],
-        "defaultValue": "Hide",
-        "description": "Hide keeps the bar free of a permanent zero."
-      },
-      {
-        "key": "peerHost",
-        "type": "string",
-        "label": "Peer machine",
-        "defaultValue": "auto",
-        "description": "SSH host whose own check is shown in the panel. auto picks it from chezmoi's role (laptop -> desktop, desktop -> laptop). Empty disables it."
-      },
-      {
-        "key": "claudePaths",
-        "type": "string",
-        "label": "Claude paths to watch",
-        "defaultValue": "~/.claude/skills ~/.claude/hooks ~/.claude/projects/-home-enisdev/memory ~/.claude/CLAUDE.md ~/.claude/settings.json",
-        "description": "Whitespace-separated paths under ~/.claude where files chezmoi neither manages nor ignores are counted. Empty disables it."
-      }
-    ]
+    "defaultSection": "right"
   }
 }
