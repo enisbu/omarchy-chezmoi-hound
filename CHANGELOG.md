@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.0-enisbu.1
+
+- Schlanke Oberfläche: in der Bar nur ein Sync-Symbol mit Akzentpunkt bei Drift, unsichtbar wenn synchron, keine Zahl.
+- Panel mit zwei Spalten, chezmoi und Claude (`~/.claude`), je Zusammenfassung, höchstens vier Pfade und ein Button **Sync**.
+- **Sync** je Seite: übernehmen, committen mit `chore: sync <seite> from <role>`, `pull --rebase`, pushen, Eingehendes
+  nur für diese Seite anwenden, auf der chezmoi-Seite danach fällige Skripte.
+- Bei Fehlern eine kurze Zeile und **Mit Claude lösen**, das den Standard-Agenten mit Fehlerkontext im Quellrepo startet.
+- Entfernt: Einstellungen samt Schema, KI-Vorschlag, Ignorieren, Peer, Verlauf, Undo, Quellrepo-Abschnitt, `--render`, `--source`.
+- Protokoll `version 3`: Datensätze `local`, `incoming`, `commits`, `unpushed` tragen die Seite.
+
 ## 1.2.0-enisbu.1
 
 - Fork unter `enisbu.chezmoi-hound`, Oberfläche auf Deutsch.
