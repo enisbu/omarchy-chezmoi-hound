@@ -92,8 +92,8 @@ fail() {
     exit 1
 }
 
-command -v chezmoi >/dev/null 2>&1 || fail "chezmoi is not on PATH"
-command -v git >/dev/null 2>&1 || fail "git is not on PATH"
+command -v chezmoi >/dev/null 2>&1 || fail "chezmoi ist nicht im PATH"
+command -v git >/dev/null 2>&1 || fail "git ist nicht im PATH"
 
 # One place that decides how chezmoi is invoked, so --source cannot be
 # remembered in one call and forgotten in the next.
@@ -144,9 +144,9 @@ else
     srcdir=$(chezmoi source-path 2>/dev/null) || srcdir=""
     [ -n "$srcdir" ] || srcdir="$HOME/.local/share/chezmoi"
 fi
-[ -d "$srcdir" ] || fail "no source directory at $srcdir"
+[ -d "$srcdir" ] || fail "kein Quellverzeichnis unter $srcdir"
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/chezmoi-hound.XXXXXX") || fail "cannot create a temporary directory"
+work=$(mktemp -d "${TMPDIR:-/tmp}/chezmoi-hound.XXXXXX") || fail "kein temporäres Verzeichnis möglich"
 trap 'rm -rf "$work"' EXIT INT TERM
 
 # ---- 1. edited here, not captured, and scripts that are due -----------------
@@ -176,10 +176,9 @@ if chez status >"$work/status" 2>"$work/status.err"; then
         [ "$home" -le "$LIMIT" ] && printf 'file\t%s\n' "${line#?? }" >>"$work/files"
     done <"$work/status"
 else
-    fail "chezmoi status failed: $(head -n 1 "$work/status.err" 2>/dev/null)"
+    fail "chezmoi status fehlgeschlagen: $(head -n 1 "$work/status.err" 2>/dev/null)"
 fi
 
-# ---- 1b. new under ~/.claude, neither managed nor ignored -------------------
 [ "$CLAUDE_SET" = 1 ] ||
     CLAUDE_PATHS="~/.claude/skills ~/.claude/hooks ~/.claude/projects/$(printf '%s' "$HOME" | tr '/' '-')/memory ~/.claude/CLAUDE.md ~/.claude/settings.json"
 claude=0
@@ -205,7 +204,7 @@ upstream=""
 fetched=""
 
 if ! git -C "$srcdir" rev-parse --git-dir >/dev/null 2>&1; then
-    printf 'note\t%s\n' "$srcdir is not a git repository: only \$HOME drift is counted here"
+    printf 'note\t%s\n' "$srcdir ist kein Git-Repo, gezählt wird nur, was sich in \$HOME geändert hat"
     printf 'version\t2\n'
     printf 'stamp\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
     printf 'source\t%s\n' "$srcdir"
@@ -218,7 +217,7 @@ fi
 if [ "$FETCH" = 1 ]; then
     if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=8" \
         timeout -k 2 20 git -C "$srcdir" fetch --quiet >/dev/null 2>"$work/fetch.err"; then
-        printf 'note\tfetch failed: %s\n' "$(head -n 1 "$work/fetch.err" 2>/dev/null)" >>"$work/notes"
+        printf 'note\tAbgleich mit dem Remote fehlgeschlagen: %s\n' "$(head -n 1 "$work/fetch.err" 2>/dev/null)" >>"$work/notes"
     fi
 fi
 fetchhead=$(git -C "$srcdir" rev-parse --git-path FETCH_HEAD 2>/dev/null) || fetchhead=""
@@ -248,7 +247,7 @@ if [ -n "$upstream" ]; then
             [ -n "$c" ] && printf 'incoming\t%s\n' "$c" >>"$work/incoming"
         done
 else
-    printf 'note\t%s has no upstream, so nothing can be reported as unpushed\n' "${branch:-the branch}" >>"$work/notes"
+    printf 'note\t%s hat kein Upstream, nicht gepusht und eingehend bleiben unbekannt\n' "${branch:-the branch}" >>"$work/notes"
 fi
 
 # ---- 4. where the repo has just been ---------------------------------------

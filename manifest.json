@@ -6,7 +6,7 @@
   "author": "Enis Budancamanak",
   "license": "MIT",
   "homepage": "https://github.com/enisbu/omarchy-chezmoi-hound",
-  "description": "A bar count of dotfile drift that hunts it down. It adds up what this machine has edited and the source has not captured, what the source repo has not committed, and what the remote has not seen - then the panel names the items and offers to push them or capture and commit them.",
+  "description": "A bar count of dotfile drift that hunts it down. It adds up what this machine has edited and the source has not captured, what the source repo has not committed or pushed, what the remote has that this machine has not pulled, due run scripts and new files under ~/.claude, and shows the other machine's state over SSH. The panel offers to pull, capture, commit, push and run scripts.",
   "kinds": [
     "bar-widget"
   ],
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Chezmoi Hound",
-    "description": "Dotfile drift across $HOME, the source repo and its remote, with push and capture-and-commit actions.",
+    "description": "Dotfile drift across $HOME, the source repo, its remote and a peer machine, with pull, capture, commit, push and script actions.",
     "category": "System",
     "aliases": [
       "dotfiles",
@@ -29,7 +29,10 @@
       "sourceDir": "",
       "checkSeconds": 300,
       "whenClean": "Hide",
-      "aiCommand": ""
+      "aiCommand": "",
+      "fetchSeconds": 900,
+      "peerHost": "auto",
+      "claudePaths": "~/.claude/skills ~/.claude/hooks ~/.claude/projects/-home-enisdev/memory ~/.claude/CLAUDE.md ~/.claude/settings.json"
     },
     "schema": [
       {
@@ -56,6 +59,16 @@
         "defaultValue": 300
       },
       {
+        "key": "fetchSeconds",
+        "type": "integer",
+        "label": "Fetch the remote every (seconds)",
+        "min": 300,
+        "max": 86400,
+        "step": 300,
+        "defaultValue": 900,
+        "description": "How often the source repo is fetched to count incoming commits. The normal re-check never touches the network; opening the panel also fetches."
+      },
+      {
         "key": "whenClean",
         "type": "enum",
         "label": "When everything is in sync",
@@ -65,6 +78,20 @@
         ],
         "defaultValue": "Hide",
         "description": "Hide keeps the bar free of a permanent zero."
+      },
+      {
+        "key": "peerHost",
+        "type": "string",
+        "label": "Peer machine",
+        "defaultValue": "auto",
+        "description": "SSH host whose own check is shown in the panel. auto picks it from chezmoi's role (laptop -> desktop, desktop -> laptop). Empty disables it."
+      },
+      {
+        "key": "claudePaths",
+        "type": "string",
+        "label": "Claude paths to watch",
+        "defaultValue": "~/.claude/skills ~/.claude/hooks ~/.claude/projects/-home-enisdev/memory ~/.claude/CLAUDE.md ~/.claude/settings.json",
+        "description": "Whitespace-separated paths under ~/.claude where files chezmoi neither manages nor ignores are counted. Empty disables it."
       }
     ]
   }

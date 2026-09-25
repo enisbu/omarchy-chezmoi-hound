@@ -7,16 +7,18 @@ import qs.Ui
 // QtQuick.Controls import would shadow the kit's own Button and TextField.
 import QtQuick.Controls as QQC
 
-// Chezmoi Hound - a count of dotfile drift, and the two things it makes you
-// want to do about it.
+// Chezmoi Hound - a count of dotfile drift, and the things it makes you want to
+// do about it.
 //
-// The number is three parts added up: managed targets this machine has edited
+// The number is six parts added up: managed targets this machine has edited
 // and the source has not captured, paths the source repo's own working tree is
-// holding uncommitted, and commits the remote has not seen. The badge is silent
-// while everything is in sync - a permanent zero is noise.
+// holding uncommitted, commits the remote has not seen, commits the remote has
+// that this machine has not pulled, due run scripts, and new files under the
+// watched ~/.claude paths. The badge is silent while everything is in sync - a
+// permanent zero is noise.
 //
 // Neither the counting nor the git work happens in QML. bin/chezmoi-hound-check
-// is polled on a timer and answers in a line protocol, and the panel's two
+// is polled on a timer and answers in a line protocol, and the panel's
 // buttons run bin/chezmoi-hound-act. Both ship next to this file, so the plugin
 // depends on chezmoi and git and on nothing else the author happens to have
 // installed; the widget itself never shells out to git.
@@ -52,6 +54,19 @@ Panel {
 
   readonly property bool showWhenClean: String(setting("whenClean", "Hide")) === "Show"
 
+  readonly property int fetchSeconds: {
+    var n = Number(setting("fetchSeconds", 900))
+    if (!isFinite(n) || n < 300) return 900
+    if (n > 86400) return 86400
+    return Math.floor(n)
+  }
+
+  readonly property string peerHost: String(setting("peerHost", "auto")).replace(/^\s+|\s+$/g, "")
+
+  readonly property string claudePaths: String(setting("claudePaths",
+    "~/.claude/skills ~/.claude/hooks ~/.claude/projects/-home-enisdev/memory ~/.claude/CLAUDE.md ~/.claude/settings.json"))
+    .replace(/^\s+|\s+$/g, "")
+
   // Section titles. The shared PanelSectionHeader is bold already - what made
   // these read weakly was its default colour, dimmed 1.4x to sit under a hero
   // this panel no longer has, which left a title the same grey as the rows it
@@ -80,9 +95,15 @@ Panel {
   property int homeCount: 0
   property int repoCount: 0
   property int unpushed: 0
+  property int behind: 0
+  property int scriptsCount: 0
+  property int claudeCount: 0
   property int total: 0
   property var detail: []
   property var commits: []
+  property var incoming: []
+  property var scriptDetail: []
+  property var claudeDetail: []
   property var repoDetail: []
   property var recentCommits: []      // "<sha>  <subject>", newest first
   property var notes: []
@@ -90,8 +111,18 @@ Panel {
   property string reportedSource: ""
   property string branchName: ""
   property string upstream: ""
+  property string fetched: ""
   property string problem: ""
   property bool everLoaded: false
+
+  property string peerName: ""
+  property string peerState: ""
+  property int peerHome: 0
+  property int peerUnpushed: 0
+  property int peerBehind: 0
+  property string peerStamp: ""
+  property string peerLastSeen: ""
+  readonly property bool peerDirty: root.peerState === "online" && (root.peerHome > 0 || root.peerUnpushed > 0)
 
   // ---- action state -------------------------------------------------------
   // Which action is in flight ("" when idle). While one runs the buttons are
@@ -107,6 +138,7 @@ Panel {
   property string lastAction: ""
   // Set when a re-check is asked for while one is already running.
   property bool pendingRecheck: false
+  property bool pendingFetch: false
 
   // ---- the commit message -------------------------------------------------
   // A commit only says something if a person wrote it, so the button opens an
@@ -116,8 +148,9 @@ Panel {
   // substitute message.
   property bool asking: false         // the message entry is open
   // Which drift section that entry is open in: "home" for what was edited here,
-  // "repo" for what is uncommitted in the source tree. One entry, and it lives
-  // in the section whose button asked for it.
+  // "repo" for what is uncommitted in the source tree, "claude" for new files
+  // under ~/.claude. One entry, and it lives in the section whose button asked
+  // for it.
   property string askWhere: "home"
   property bool suggesting: false     // a suggestion call is in flight
   property string aiCli: ""           // the CLI that can write one, "" for none
@@ -149,8 +182,10 @@ Panel {
 
     var lines = text.split("\n")
     var home = -1, repo = -1, unpushed = -1, total = -1
+    var behind = -1, scripts = -1, claude = -1, all = -1
     var detail = [], commits = [], repoDetail = [], notes = [], recent = []
-    var src = "", branch = "", upstream = "", stamp = "", problem = ""
+    var incoming = [], scriptDetail = [], claudeDetail = []
+    var src = "", branch = "", upstream = "", stamp = "", problem = "", fetched = ""
 
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i]
@@ -163,6 +198,14 @@ Panel {
       else if (key === "repo") repo = countOf(value)
       else if (key === "unpushed") unpushed = countOf(value)
       else if (key === "total") total = countOf(value)
+      else if (key === "behind") behind = countOf(value)
+      else if (key === "scripts") scripts = countOf(value)
+      else if (key === "claude") claude = countOf(value)
+      else if (key === "all") all = countOf(value)
+      else if (key === "incoming") { if (incoming.length < 8) incoming.push(plain(value)) }
+      else if (key === "script") { if (scriptDetail.length < 8) scriptDetail.push(plain(value)) }
+      else if (key === "claudefile") { if (claudeDetail.length < 8) claudeDetail.push(plain(value)) }
+      else if (key === "fetched") fetched = value.substring(0, 32)
       else if (key === "file") { if (detail.length < 8) detail.push(plain(value)) }
       else if (key === "commit") { if (commits.length < 8) commits.push(plain(value)) }
       else if (key === "repofile") { if (repoDetail.length < 8) repoDetail.push(plain(value)) }
@@ -187,17 +230,26 @@ Panel {
       root.problem = problem
       return false
     }
-    // The three parts must add up; a reading that disagrees with itself is
+    // The parts must add up; a reading that disagrees with itself is
     // rejected rather than shown half-believed.
     if (home < 0 || repo < 0 || unpushed < 0 || total < 0) return false
+    if (behind < 0 || scripts < 0 || claude < 0 || all < 0) return false
     if (home + repo + unpushed !== total) return false
+    if (total + behind + scripts + claude !== all) return false
 
     root.homeCount = home
     root.repoCount = repo
     root.unpushed = unpushed
-    root.total = total
+    root.behind = behind
+    root.scriptsCount = scripts
+    root.claudeCount = claude
+    root.total = all
     root.detail = detail
     root.commits = commits
+    root.incoming = incoming
+    root.scriptDetail = scriptDetail
+    root.claudeDetail = claudeDetail
+    root.fetched = fetched
     root.repoDetail = repoDetail
     root.recentCommits = recent
     root.notes = notes
@@ -219,29 +271,61 @@ Panel {
       .substring(0, 200)
   }
 
-  function plural(count, noun) {
-    return count + " " + noun + (count === 1 ? "" : "s")
+  function applyPeer(raw) {
+    var lines = String(raw || "").substring(0, 4096).split("\n")
+    var state = "", name = "", home = 0, unpushed = 0, behind = 0, stamp = ""
+    for (var i = 0; i < lines.length; i++) {
+      var tab = lines[i].indexOf("\t")
+      if (tab < 0) continue
+      var key = lines[i].substring(0, tab)
+      var value = lines[i].substring(tab + 1)
+      if (key === "peerstate") state = plain(value)
+      else if (key === "peer") name = plain(value)
+      else if (key === "peerhome") home = Math.max(0, countOf(value))
+      else if (key === "peerunpushed") unpushed = Math.max(0, countOf(value))
+      else if (key === "peerbehind") behind = Math.max(0, countOf(value))
+      else if (key === "peerstamp") stamp = value.substring(0, 32)
+    }
+    root.peerState = state
+    root.peerName = name
+    root.peerHome = home
+    root.peerUnpushed = unpushed
+    root.peerBehind = behind
+    root.peerStamp = stamp
+    if (state === "online" && stamp !== "") root.peerLastSeen = stamp
+  }
+
+  function plural(count, one, many) {
+    return count + " " + (count === 1 ? one : many)
+  }
+
+  function localCount() {
+    return root.total - root.behind
   }
 
   function tooltip() {
     if (root.total === 0) {
       return root.everLoaded
-        ? "Dotfiles in sync" + (root.stamp ? "  ·  checked " + root.stamp : "")
-        : "No dotfiles reading yet  ·  the first check is on its way"
+        ? "Dotfiles synchron" + (root.stamp ? "  ·  geprüft " + root.stamp : "")
+        : "Noch keine Messung  ·  die erste Prüfung läuft"
     }
 
     var parts = []
-    if (root.homeCount > 0) parts.push(root.homeCount + " changed in $HOME")
+    if (root.behind > 0) parts.push(root.behind + " eingehend")
+    if (root.homeCount > 0) parts.push(root.homeCount + " lokal geändert")
+    if (root.claudeCount > 0) parts.push(root.claudeCount + " Claude neu")
+    if (root.scriptsCount > 0) parts.push(root.plural(root.scriptsCount, "Skript fällig", "Skripte fällig"))
+    if (root.unpushed > 0) parts.push(root.unpushed + " nicht gepusht")
     if (root.repoCount > 0) parts.push(root.repoCount + " uncommitted")
-    if (root.unpushed > 0) parts.push(root.unpushed + " unpushed")
-    var out = "Dotfiles out of sync: " + parts.join("  ·  ")
+    var out = "Dotfiles: " + parts.join("  ·  ")
 
     if (root.detail.length > 0) {
       out += "\n" + root.detail.join("\n")
       if (root.homeCount > root.detail.length) out += "\n…"
     }
-    if (root.stamp) out += "\nchecked " + root.stamp
-    out += "\nclick: push / commit what is drifting"
+    if (root.peerDirty) out += "\n" + root.peerName + ": offene Änderungen"
+    if (root.stamp) out += "\ngeprüft " + root.stamp
+    out += "\nKlick: holen, übernehmen oder pushen"
     return out
   }
 
@@ -250,19 +334,14 @@ Panel {
     return String(root.total)
   }
 
-  // A divider with nothing on one side of it is a stray line, not a divider.
-  function commitsDividerShown() {
-    if (root.recentCommits.length === 0 && root.unpushed === 0) return false
-    return root.problem !== "" || root.notes.length > 0
-        || root.homeCount > 0 || root.repoCount > 0 || root.total === 0
-  }
-
-  // The history's heading. Its count is only ever the part of the history the
-  // remote has not seen - the rows speak for themselves, and a total next to
-  // an unfixed number was two counts doing one job.
-  function commitsTitle() {
-    if (root.unpushed <= 0) return "LATEST COMMITS"
-    return "LATEST COMMITS \u2014 " + root.plural(root.unpushed, "commit") + " not pushed"
+  function peerLine() {
+    if (root.peerState === "offline")
+      return "offline" + (root.peerLastSeen !== "" ? "  ·  zuletzt gesehen " + root.peerLastSeen : "")
+    if (root.peerState === "nohound") return "erreichbar, aber ohne Chezmoi Hound"
+    if (root.peerState !== "online") return "noch nicht geprüft"
+    return "lokal " + root.peerHome + "  ·  nicht gepusht " + root.peerUnpushed
+      + "  ·  eingehend " + root.peerBehind
+      + (root.peerStamp !== "" ? "  ·  Stand " + root.peerStamp : "")
   }
 
   // The full text in a floating terminal. The badge's right-click and the
@@ -299,7 +378,7 @@ Panel {
 
   // ---- actions ------------------------------------------------------------
 
-  // Both buttons go through here, so there is exactly one place that decides
+  // Every button goes through here, so there is exactly one place that decides
   // what a click runs and one place that refreshes the badge afterwards.
   function runAction(what) {
     if (actionProc.running || root.running !== "") return
@@ -312,8 +391,8 @@ Panel {
     // does: writing a commit message must not quietly become permission to
     // publish it, which stays a separate thing to authorise.
     var args
-    if (what === "push") {
-      args = ["push"]
+    if (what === "push" || what === "pull" || what === "scripts") {
+      args = [what]
     } else if (what === "undo") {
       // One commit, named by its own sha: never a range, never a reflog word.
       args = ["undo", "--commit", root.undoSha]
@@ -330,10 +409,13 @@ Panel {
     } else {
       args = ["commit"]
       if (root.lastMessage !== "") args.push("--message", root.lastMessage)
+      if (root.askWhere === "claude") args.push("--claude-paths", root.claudePaths)
     }
     // 180s: capturing a large tree can take a while, and a half-captured tree
-    // abandoned by a timeout is worse than a slow button.
-    actionProc.command = withSource(["/usr/bin/timeout", "-k", "2", "180", root.actScript].concat(args))
+    // abandoned by a timeout is worse than a slow button. Scripts and a pull
+    // that runs them get longer.
+    var limit = (what === "pull" || what === "scripts") ? "600" : "180"
+    actionProc.command = withSource(["/usr/bin/timeout", "-k", "2", limit, root.actScript].concat(args))
     actionProc.running = true
   }
 
@@ -381,7 +463,7 @@ Panel {
   function askCommit(where) {
     if (root.running !== "" || actionProc.running) return
     root.undoRow = ""
-    root.askWhere = where === "repo" ? "repo" : "home"
+    root.askWhere = (where === "repo" || where === "claude") ? where : "home"
     root.asking = true
     root.suggestHint = ""
     messageField.text = ""
@@ -484,20 +566,33 @@ Panel {
   // `notify` is true only where the reading changed because of something the
   // user did; the timer passes nothing, so a tick cannot ping-pong between
   // monitors.
-  function refresh(notify) {
+  function refresh(notify, fetch) {
     // Peers are told first and unconditionally: an action must never leave
     // another monitor showing the count from before it, and a check of our own
     // already in flight must not swallow that.
     if (notify === true) notifyPeers()
     if (checkProc.running) {
       root.pendingRecheck = true
+      if (fetch === true) root.pendingFetch = true
       return
     }
-    checkProc.command = withSource(["/usr/bin/timeout", "-k", "2", "60", root.checkScript])
+    var args = ["/usr/bin/timeout", "-k", "2", "60", root.checkScript, "--claude-paths", root.claudePaths]
+    if (fetch === true) args.push("--fetch")
+    checkProc.command = withSource(args)
     checkProc.running = true
   }
 
-  visible: root.total > 0 || root.showWhenClean
+  function checkPeer() {
+    if (peerProc.running) return
+    if (root.peerHost === "") {
+      root.peerState = "disabled"
+      return
+    }
+    peerProc.command = withSource(["/usr/bin/timeout", "-k", "2", "20", root.checkScript, "--peer", root.peerHost])
+    peerProc.running = true
+  }
+
+  visible: root.total > 0 || root.showWhenClean || root.peerDirty
   implicitWidth: vertical ? barSize : (badge.width + Style.spaceReal(6))
   implicitHeight: vertical ? (badge.height + Style.spaceReal(6)) : barSize
 
@@ -510,6 +605,17 @@ Panel {
     running: true
     triggeredOnStart: true
     onTriggered: root.refresh()
+  }
+
+  Timer {
+    interval: root.fetchSeconds * 1000
+    repeat: true
+    running: true
+    triggeredOnStart: true
+    onTriggered: {
+      root.refresh(false, true)
+      root.checkPeer()
+    }
   }
 
   // Right-click only: the old behaviour, kept because a floating terminal is
@@ -527,19 +633,45 @@ Panel {
     id: badge
     anchors.centerIn: parent
 
-    // Just the count. A Nerd Font glyph used to sit to its left; it was dropped
-    // because the codepoint it used draws a barcode in this font, not a git
-    // icon, and a bare number is clearer than a number with a puzzle next to it.
+    // The count, and an accent arrow in front when some of it is incoming: a
+    // pull, not a capture or a push. A Nerd Font glyph used to sit to its left;
+    // it was dropped because the codepoint it used draws a barcode in this font.
+    Text {
+      id: behindArrow
+      anchors.verticalCenter: parent.verticalCenter
+      visible: root.behind > 0
+      textFormat: Text.PlainText
+      text: "\u2193"
+      color: Color.accent
+      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+      font.pixelSize: Math.max(9, Math.round(root.barSize * 0.5))
+      renderType: Text.NativeRendering
+    }
+
     Text {
       id: badgeLabel
       anchors.verticalCenter: parent.verticalCenter
+      visible: root.total > 0 || root.showWhenClean
       textFormat: Text.PlainText
       text: root.countText()
       // One colour whether or not there is anything to report: a dimmed zero
       // read as a different kind of number rather than as "nothing to do".
-      color: Color.foreground
+      color: root.behind > 0 && root.localCount() === 0 ? Color.accent : Color.foreground
       font.family: root.bar ? root.bar.fontFamily : Style.font.family
       font.pixelSize: Math.max(9, Math.round(root.barSize * 0.5))
+      renderType: Text.NativeRendering
+    }
+
+    Text {
+      id: peerMark
+      anchors.verticalCenter: parent.verticalCenter
+      visible: root.peerDirty
+      textFormat: Text.PlainText
+      text: "\u2022"
+      color: Color.foreground
+      opacity: 0.55
+      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+      font.pixelSize: Math.max(7, Math.round(root.barSize * 0.35))
       renderType: Text.NativeRendering
     }
   }
@@ -581,13 +713,27 @@ Panel {
       var applied = root.apply(checkOut.text)
       if (!applied && root.problem === "") {
         var err = plain(String(checkErr.text || "").trim())
-        root.problem = err !== "" ? err : "chezmoi-hound-check exited " + code
+        root.problem = err !== "" ? err : "chezmoi-hound-check endete mit " + code
       }
       // Someone asked for a fresh reading while this one was in flight.
       if (root.pendingRecheck) {
+        var fetch = root.pendingFetch
         root.pendingRecheck = false
-        root.refresh(false)
+        root.pendingFetch = false
+        root.refresh(false, fetch)
       }
+    }
+  }
+
+  Process {
+    id: peerProc
+    stdout: StdioCollector {
+      id: peerOut
+      waitForEnd: true
+    }
+    onExited: function (code, status) {
+      if (code === 0) root.applyPeer(peerOut.text)
+      else root.peerState = "offline"
     }
   }
 
@@ -626,13 +772,18 @@ Panel {
         // used to read out "1 target(s) captured" - the script's summary of its
         // work, not the outcome the panel means to state. The detail stays in the
         // log, which Full details prints.
-        root.resultText = root.lastAction === "push" ? "Pushed."
-          : root.lastAction === "undo" ? "Undone."
-          : root.lastAction === "ignore" ? "Added to .chezmoiignore — nothing here changed."
-          : "Captured and committed."
+        root.resultText = root.lastAction === "push" ? "Gepusht."
+          : root.lastAction === "pull" ? "Geholt und angewendet."
+          : root.lastAction === "scripts" ? "Skripte ausgeführt."
+          : root.lastAction === "undo" ? "Zurückgenommen."
+          : root.lastAction === "ignore" ? "In .chezmoiignore eingetragen, hier hat sich nichts geändert."
+          : "Übernommen und committet."
+      } else if (exitCode === 4) {
+        root.result = "refused"
+        root.resultText = tail !== "" ? tail : "abgelehnt"
       } else {
         root.result = "error"
-        root.resultText = tail !== "" ? tail : "the action exited " + exitCode
+        root.resultText = tail !== "" ? tail : "die Aktion endete mit " + exitCode
       }
       // Re-read now rather than at the next tick, and tell the other monitors'
       // badges to do the same.
@@ -680,16 +831,16 @@ Panel {
         var marker = String(text || "")
         var wrote = marker.match(/HOUND-SUGGEST ai=(.+)/)
         var failed = marker.match(/HOUND-SUGGEST failed=(\S+)(?: status=(\S+))?/)
-        if (wrote) root.suggestHint = "Written by " + wrote[1].trim() + " - read it before committing."
-        else if (failed) root.suggestHint = failed[1] + " could not write one"
+        if (wrote) root.suggestHint = "Geschrieben von " + wrote[1].trim() + ", vor dem Commit lesen."
+        else if (failed) root.suggestHint = failed[1] + " hat keinen Vorschlag geliefert"
                                                  + (failed[2] && failed[2] !== "0" ? " (exit " + failed[2] + ")" : "")
-                                                 + "; the entry is yours to fill."
-        else root.suggestHint = "No AI CLI here answered; the entry is yours to fill."
+                                                 + ", das Feld gehört dir."
+        else root.suggestHint = "Keine KI hier hat geantwortet, das Feld gehört dir."
       }
     }
     onExited: function (exitCode, exitStatus) {
       root.suggesting = false
-      if (exitCode !== 0) root.suggestHint = "The suggestion run exited " + exitCode + "."
+      if (exitCode !== 0) root.suggestHint = "Der Vorschlag endete mit " + exitCode + "."
     }
   }
 
@@ -706,10 +857,10 @@ Panel {
     contentWidth: panel.fittedContentWidth(Style.space(420))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
-    // The one thing worth asking the filesystem when the panel opens: whether
-    // anything here could write the commit message. A couple of PATH lookups, so
-    // it runs every time, and a CLI logged in since is picked up without a
-    // restart. Closing forgets any half-typed message.
+    // Opening asks whether anything here could write the commit message (a
+    // couple of PATH lookups, so a CLI logged in since is picked up without a
+    // restart), fetches, and asks the peer. Closing forgets any half-typed
+    // message.
     onOpenChanged: {
       if (!open) {
         root.asking = false
@@ -721,6 +872,8 @@ Panel {
         root.undoRow = ""
         return
       }
+      root.refresh(false, true)
+      root.checkPeer()
       if (probeProc.running) return
       root.probeAi()
     }
@@ -733,6 +886,7 @@ Panel {
       // the field to cancel the entry and Return has to reach it to commit.
       blocked: messageField.activeFocus || sourceField.activeFocus
                || checkField.field.activeFocus || aiField.activeFocus
+               || fetchField.field.activeFocus || peerField.activeFocus || claudeField.activeFocus
       onCloseRequested: root.close()
 
       Column {
@@ -757,9 +911,60 @@ Panel {
           font.pixelSize: Style.font.bodySmall
         }
 
+        Column {
+          id: incomingSection
+          width: parent.width
+          spacing: Style.space(8)
+          visible: root.behind > 0
+
+          PanelSectionHeader {
+            text: "EINGEHEND · " + root.plural(root.behind, "Commit", "Commits")
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            color: Color.accent
+          }
+
+          Repeater {
+            model: root.incoming
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "  " + modelData
+              color: root.bar.foreground
+              opacity: 0.75
+              elide: Text.ElideRight
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          Text {
+            width: parent.width
+            visible: root.homeCount > 0
+            textFormat: Text.PlainText
+            text: "Erst die lokalen Änderungen übernehmen: Holen würde sie überschreiben."
+            color: root.bar.foreground
+            wrapMode: Text.WordWrap
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Button {
+            id: pullButton
+            text: root.running === "pull" ? "Hole…" : "Holen"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.bodySmall
+            horizontalPadding: Style.spacing.controlPaddingX
+            verticalPadding: Style.spacing.controlPaddingY
+            bordered: true
+            opacity: root.running === "" && root.homeCount === 0 ? 1 : 0.45
+            onClicked: root.runAction("pull")
+          }
+        }
+
         // ---- what the repo has not got -------------------------------------
-        // Two lists: what was edited on this machine and not captured, and what
-        // is uncommitted in the source tree itself.
+        // Edited on this machine and not captured.
         Column {
           id: driftSection
           width: parent.width
@@ -773,8 +978,8 @@ Panel {
           PanelSectionHeader {
             id: driftHeader
             text: root.homeCount > 0
-              ? "DOTFILE DRIFT \u2014 " + root.plural(root.homeCount, "change")
-              : "DOTFILE DRIFT"
+              ? "LOKAL GEÄNDERT · " + root.plural(root.homeCount, "Datei", "Dateien")
+              : "LOKAL GEÄNDERT"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             color: root.sectionTitleColor
@@ -800,8 +1005,8 @@ Panel {
             visible: root.homeCount === 0
             textFormat: Text.PlainText
             text: root.everLoaded
-              ? "No drift detected — the files here match the source."
-              : "No reading yet — the first check is on its way."
+              ? "Nichts geändert, die Dateien hier entsprechen der Quelle."
+              : "Noch keine Messung, die erste Prüfung läuft."
             color: root.bar.foreground
             opacity: 0.7
             wrapMode: Text.WordWrap
@@ -818,7 +1023,7 @@ Panel {
               // of a commit. The ellipsis is the promise that it opens the message
               // rather than committing on the spot.
               visible: root.homeCount > 0
-              text: root.running === "commit" ? "Committing…" : "Capture and commit " + root.plural(root.homeCount, "change") + "…"
+              text: root.running === "commit" && root.askWhere === "home" ? "Committe…" : "Übernehmen…"
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.bodySmall
@@ -835,7 +1040,7 @@ Panel {
               // same moment - capture it, or stop managing it - and the ellipsis
               // says it asks first.
               visible: root.homeCount > 0
-              text: root.running === "ignore" ? "Ignoring…" : "Add to .chezmoiignore…"
+              text: root.running === "ignore" ? "Ignoriere…" : "Ignorieren…"
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.bodySmall
@@ -858,7 +1063,7 @@ Panel {
             visible: root.ignoring
 
             PanelSectionHeader {
-              text: "IGNORE IN CHEZMOI"
+              text: "IN CHEZMOI IGNORIEREN"
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               color: root.sectionTitleColor
@@ -881,10 +1086,10 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: "Goes in the source's .chezmoiignore, so chezmoi stops managing "
-                + "and counting " + root.plural(root.detail.length, "path") + ". Nothing in "
-                + "your home is deleted, moved or changed, and the edit to .chezmoiignore "
-                + "is itself uncommitted until you capture it."
+              text: "Kommt in die .chezmoiignore der Quelle, chezmoi verwaltet und zählt "
+                + root.plural(root.detail.length, "diesen Pfad", "diese Pfade") + " dann nicht mehr. "
+                + "In deinem Home wird nichts gelöscht, verschoben oder geändert, und die "
+                + "Änderung an .chezmoiignore bleibt uncommitted, bis du sie übernimmst."
               color: root.bar.foreground
               opacity: 0.7
               wrapMode: Text.WordWrap
@@ -896,7 +1101,7 @@ Panel {
               spacing: Style.space(8)
 
               Button {
-                text: "Add " + root.plural(root.detail.length, "path") + " to .chezmoiignore"
+                text: "Eintragen"
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 fontSize: Style.font.bodySmall
@@ -907,7 +1112,7 @@ Panel {
               }
 
               Button {
-                text: "Cancel"
+                text: "Abbrechen"
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 fontSize: Style.font.bodySmall
@@ -920,9 +1125,123 @@ Panel {
           }
         }
 
-        PanelSeparator {
-          visible: root.homeCount > 0 && root.repoCount > 0
-          foreground: root.bar.foreground
+        Column {
+          id: claudeSection
+          width: parent.width
+          spacing: Style.space(8)
+          visible: root.claudeCount > 0 || (root.asking && root.askWhere === "claude")
+
+          PanelSectionHeader {
+            text: "CLAUDE NEU · " + root.plural(root.claudeCount, "Pfad", "Pfade")
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            color: root.sectionTitleColor
+          }
+
+          Repeater {
+            model: root.claudeDetail
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "  " + modelData
+              color: root.bar.foreground
+              opacity: 0.75
+              elide: Text.ElideLeft
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          Button {
+            text: root.running === "commit" && root.askWhere === "claude" ? "Committe…" : "Übernehmen…"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.bodySmall
+            horizontalPadding: Style.spacing.controlPaddingX
+            verticalPadding: Style.spacing.controlPaddingY
+            bordered: true
+            opacity: root.running === "" ? 1 : 0.45
+            onClicked: root.askCommit("claude")
+          }
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          visible: root.scriptsCount > 0
+
+          PanelSectionHeader {
+            text: "FÄLLIGE SKRIPTE · " + root.scriptsCount
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            color: root.sectionTitleColor
+          }
+
+          Repeater {
+            model: root.scriptDetail
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "  " + modelData
+              color: root.bar.foreground
+              opacity: 0.75
+              elide: Text.ElideLeft
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          Button {
+            text: root.running === "scripts" ? "Läuft…" : "Skripte ausführen"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.bodySmall
+            horizontalPadding: Style.spacing.controlPaddingX
+            verticalPadding: Style.spacing.controlPaddingY
+            bordered: true
+            opacity: root.running === "" ? 1 : 0.45
+            onClicked: root.runAction("scripts")
+          }
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          visible: root.unpushed > 0
+
+          PanelSectionHeader {
+            text: "NICHT GEPUSHT · " + root.plural(root.unpushed, "Commit", "Commits")
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            color: root.sectionTitleColor
+          }
+
+          Repeater {
+            model: root.commits
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "  " + modelData
+              color: root.bar.foreground
+              opacity: 0.75
+              elide: Text.ElideRight
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+
+          Button {
+            id: pushButton
+            text: root.running === "push" ? "Pushe…" : "Pushen"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.bodySmall
+            horizontalPadding: Style.spacing.controlPaddingX
+            verticalPadding: Style.spacing.controlPaddingY
+            bordered: true
+            opacity: root.running === "" ? 1 : 0.45
+            onClicked: root.runAction("push")
+          }
         }
 
         // ---- the repo's own working tree ----
@@ -934,7 +1253,7 @@ Panel {
           visible: root.repoCount > 0 || (root.asking && root.askWhere === "repo")
 
           PanelSectionHeader {
-            text: "UNCOMMITTED IN THE REPO — " + root.plural(root.repoCount, "path")
+            text: "QUELLREPO UNCOMMITTED · " + root.plural(root.repoCount, "Pfad", "Pfade")
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             color: root.sectionTitleColor
@@ -955,7 +1274,7 @@ Panel {
           }
 
           Button {
-            text: root.running === "commit" ? "Committing…" : "Commit " + root.plural(root.repoCount, "repo change") + "…"
+            text: root.running === "commit" && root.askWhere === "repo" ? "Committe…" : "Committen…"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             fontSize: Style.font.bodySmall
@@ -967,27 +1286,46 @@ Panel {
           }
         }
 
+        Column {
+          id: peerSection
+          width: parent.width
+          spacing: Style.space(8)
+          visible: root.peerHost !== "" && root.peerState !== "" && root.peerState !== "disabled"
 
-        // The divider that used to open the panel, when a hero and a separate
-        // "not pushed" list lived above this point. With both gone it belongs
-        // between the drift and the history - and only when there is something
-        // on both sides of it.
+          PanelSectionHeader {
+            text: "PEER · " + (root.peerName !== "" ? root.peerName : root.peerHost)
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            color: root.sectionTitleColor
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "  " + root.peerLine()
+            color: root.bar.foreground
+            opacity: root.peerState === "online" ? 0.75 : 0.55
+            wrapMode: Text.WordWrap
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+        }
+
         PanelSeparator {
-          visible: root.commitsDividerShown()
+          visible: root.recentCommits.length > 0
           foreground: root.bar.foreground
         }
 
         // ---- local commits --------------------------------------------------
-        // The history, and the push that follows from it. There is no separate
-        // "not pushed" list any more: those commits are the first rows of this
-        // one, and the heading counts them, so no sha can appear twice.
+        // The history. A row the remote has not seen is also listed under
+        // NICHT GEPUSHT, which is where its push button lives.
         Column {
           width: parent.width
           spacing: Style.space(8)
-          visible: root.recentCommits.length > 0 || root.unpushed > 0
+          visible: root.recentCommits.length > 0
 
           PanelSectionHeader {
-            text: root.commitsTitle()
+            text: "VERLAUF"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             color: root.sectionTitleColor
@@ -1014,9 +1352,9 @@ Panel {
 
               Button {
                 id: undoButton
-                iconText: "\uf0e2"
+                iconText: ""
                 iconSize: Style.font.bodySmall
-                tooltipText: "Take this commit back"
+                tooltipText: "Diesen Commit zurücknehmen"
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 fontSize: Style.font.bodySmall
@@ -1038,7 +1376,7 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: "Take back " + root.undoRow + "?"
+              text: root.undoRow + " zurücknehmen?"
               wrapMode: Text.WordWrap
               color: root.bar.foreground
               font.family: root.bar.fontFamily
@@ -1048,7 +1386,7 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: "Its changes come back to the working tree as drift. If this commit is not the newest, or the remote already has it, it keeps its place in the history and only its changes are undone."
+              text: "Die Änderungen landen wieder uncommitted im Quellrepo. Ist der Commit nicht der neueste oder hat das Remote ihn schon, bleibt er in der Historie und nur seine Änderungen werden rückgängig gemacht."
               wrapMode: Text.WordWrap
               color: root.bar.foreground
               opacity: 0.7
@@ -1060,7 +1398,7 @@ Panel {
               spacing: Style.space(8)
 
               Button {
-                text: root.running === "undo" ? "Taking it back…" : "Take it back"
+                text: root.running === "undo" ? "Nehme zurück…" : "Zurücknehmen"
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 fontSize: Style.font.bodySmall
@@ -1071,7 +1409,7 @@ Panel {
               }
 
               Button {
-                text: "Keep it"
+                text: "Behalten"
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 fontSize: Style.font.bodySmall
@@ -1082,22 +1420,6 @@ Panel {
               }
             }
           }
-
-        Button {
-          id: pushButton
-          // Only when there is something to push. The rows above are a record of
-          // what is already committed, not a reason for the button.
-          visible: root.unpushed > 0
-          text: root.running === "push" ? "Pushing…" : "Push " + root.plural(root.unpushed, "commit")
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
-          fontSize: Style.font.bodySmall
-          horizontalPadding: Style.spacing.controlPaddingX
-          verticalPadding: Style.spacing.controlPaddingY
-          bordered: true
-          opacity: root.running === "" ? 1 : 0.45
-          onClicked: root.runAction("push")
-        }
         }
 
         // ---- the commit message ----
@@ -1109,13 +1431,14 @@ Panel {
           // Placed in the section that asked for it, so the entry arrives under
           // the button and against the list it is about, instead of at the far
           // end of the panel past the history.
-          parent: root.askWhere === "repo" ? repoSection : driftSection
+          parent: root.askWhere === "repo" ? repoSection
+            : root.askWhere === "claude" ? claudeSection : driftSection
           width: parent.width
           spacing: Style.space(8)
           visible: root.asking
 
           PanelSectionHeader {
-            text: "COMMIT MESSAGE"
+            text: "COMMIT-NACHRICHT"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             color: root.sectionTitleColor
@@ -1163,7 +1486,7 @@ Panel {
               id: messageField
               readonly property real lineHeight: Math.ceil(messageMetrics.height)
 
-              placeholderText: "say what this commit does"
+              placeholderText: "was dieser Commit tut"
               wrapMode: TextEdit.Wrap
               color: root.bar.foreground
               selectionColor: Style.selectionFillFor(root.bar.foreground, Color.accent)
@@ -1203,7 +1526,7 @@ Panel {
           Row {
             spacing: Style.space(8)
             Button {
-              text: root.running === "commit" ? "Committing…" : "Commit"
+              text: root.running === "commit" ? "Committe…" : "Committen"
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.bodySmall
@@ -1216,7 +1539,7 @@ Panel {
             // only fail is worse than no button.
             Button {
               visible: root.aiCli !== ""
-              text: root.suggesting ? "Asking " + root.aiCli + "…" : "Suggest with " + root.aiCli
+              text: root.suggesting ? "Frage " + root.aiCli + "…" : "Vorschlag von " + root.aiCli
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.bodySmall
@@ -1227,7 +1550,7 @@ Panel {
               onClicked: root.suggestMessage()
             }
             Button {
-              text: "Cancel"
+              text: "Abbrechen"
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.bodySmall
@@ -1260,7 +1583,7 @@ Panel {
             width: parent.width
             visible: messageField.text === "" && root.suggestHint === ""
             textFormat: Text.PlainText
-            text: "Blank - pressing Commit writes a commit with no message."
+            text: "Leer: Committen schreibt einen Commit ohne Nachricht."
             color: root.bar.foreground
             opacity: 0.7
             wrapMode: Text.WordWrap
@@ -1279,7 +1602,9 @@ Panel {
             width: parent.width
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
-            text: root.result === "ok" ? root.resultText : "Failed: " + root.resultText
+            text: root.result === "ok" ? root.resultText
+              : root.result === "refused" ? root.resultText
+              : "Fehlgeschlagen: " + root.resultText
             color: root.bar.foreground
             opacity: root.result === "ok" ? 0.85 : 1
             font.family: root.bar.fontFamily
@@ -1288,7 +1613,7 @@ Panel {
 
           Button {
             visible: root.result === "error"
-            text: "Retry"
+            text: "Nochmal"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             fontSize: Style.font.bodySmall
@@ -1310,7 +1635,7 @@ Panel {
           visible: root.settingsOpen
 
           PanelSectionHeader {
-            text: "SETTINGS"
+            text: "EINSTELLUNGEN"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             color: root.sectionTitleColor
@@ -1319,7 +1644,7 @@ Panel {
           Text {
             width: parent.width
             textFormat: Text.PlainText
-            text: "chezmoi source directory"
+            text: "chezmoi-Quellverzeichnis"
             color: root.bar.foreground
             opacity: 0.6
             font.family: root.bar.fontFamily
@@ -1330,7 +1655,7 @@ Panel {
             id: sourceField
             width: parent.width
             text: root.sourceDir
-            placeholderText: "empty: the source chezmoi itself is configured with"
+            placeholderText: "leer: die Quelle, mit der chezmoi konfiguriert ist"
             foreground: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -1343,7 +1668,7 @@ Panel {
           Text {
             width: parent.width
             textFormat: Text.PlainText
-            text: "check every, in seconds"
+            text: "Prüfen alle (Sekunden)"
             color: root.bar.foreground
             opacity: 0.6
             font.family: root.bar.fontFamily
@@ -1365,7 +1690,77 @@ Panel {
           Text {
             width: parent.width
             textFormat: Text.PlainText
-            text: "AI command a suggestion runs"
+            text: "Remote abgleichen alle (Sekunden)"
+            color: root.bar.foreground
+            opacity: 0.6
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          NumberField {
+            id: fetchField
+            value: root.fetchSeconds
+            from: 300
+            to: 86400
+            stepSize: 300
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.bodySmall
+            onModified: root.saveSetting("fetchSeconds", value)
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "Peer-Rechner (auto, SSH-Host oder leer)"
+            color: root.bar.foreground
+            opacity: 0.6
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          TextField {
+            id: peerField
+            width: parent.width
+            text: root.peerHost
+            placeholderText: "leer: kein Peer"
+            foreground: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            verticalPadding: Style.spacing.controlPaddingY
+            Keys.onReturnPressed: root.saveSetting("peerHost", peerField.text)
+            Keys.onEnterPressed: root.saveSetting("peerHost", peerField.text)
+            onEditingFinished: root.saveSetting("peerHost", peerField.text)
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "Claude-Pfade (mit Leerzeichen getrennt)"
+            color: root.bar.foreground
+            opacity: 0.6
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          TextField {
+            id: claudeField
+            width: parent.width
+            text: root.claudePaths
+            placeholderText: "leer: nicht prüfen"
+            foreground: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            verticalPadding: Style.spacing.controlPaddingY
+            Keys.onReturnPressed: root.saveSetting("claudePaths", claudeField.text)
+            Keys.onEnterPressed: root.saveSetting("claudePaths", claudeField.text)
+            onEditingFinished: root.saveSetting("claudePaths", claudeField.text)
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "KI-Befehl für Vorschläge"
             color: root.bar.foreground
             opacity: 0.6
             font.family: root.bar.fontFamily
@@ -1376,7 +1771,7 @@ Panel {
             id: aiField
             width: parent.width
             text: root.aiCommand
-            placeholderText: "Uses the default Omarchy agent unless overridden here."
+            placeholderText: "leer: der Standard-Agent von Omarchy"
             foreground: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -1392,7 +1787,7 @@ Panel {
 
             Text {
               width: parent.width - showToggle.width - parent.spacing
-              text: "show the count when everything is clean"
+              text: "Zahl auch zeigen, wenn alles synchron ist"
               color: root.bar.foreground
               opacity: 0.6
               elide: Text.ElideRight
@@ -1418,18 +1813,18 @@ Panel {
           spacing: Style.space(8)
 
           Button {
-            text: "Re-check now"
+            text: "Neu prüfen"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             fontSize: Style.font.bodySmall
             horizontalPadding: Style.spacing.controlPaddingX
             verticalPadding: Style.spacing.controlPaddingY
             bordered: true
-            onClicked: root.refresh()
+            onClicked: root.refresh(false, true)
           }
 
           Button {
-            text: "Full details"
+            text: "Details"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             fontSize: Style.font.bodySmall
@@ -1440,7 +1835,7 @@ Panel {
           }
 
           Button {
-            text: root.settingsOpen ? "Hide settings" : "Settings"
+            text: root.settingsOpen ? "Einstellungen zu" : "Einstellungen"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             fontSize: Style.font.bodySmall
@@ -1453,7 +1848,7 @@ Panel {
           // Last, and always in the same place: closing is not a comment on the
           // last action, it is the way out of the panel.
           Button {
-            text: "Close"
+            text: "Schließen"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
             fontSize: Style.font.bodySmall
@@ -1481,7 +1876,10 @@ Panel {
 
     function status(): string {
       return "total=" + root.total + " home=" + root.homeCount + " repo=" + root.repoCount
-        + " unpushed=" + root.unpushed + " visible=" + root.visible
+        + " unpushed=" + root.unpushed + " behind=" + root.behind + " scripts=" + root.scriptsCount
+        + " claude=" + root.claudeCount + " fetched=" + (root.fetched === "" ? "never" : root.fetched)
+        + " peer=" + (root.peerState === "" ? "none" : root.peerName + ":" + root.peerState)
+        + " peerDirty=" + root.peerDirty + " visible=" + root.visible
         + " running=" + (root.running === "" ? "idle" : root.running)
         + " problem=" + (root.problem === "" ? "none" : root.problem)
         + " source=" + (root.sourceDir !== "" ? root.sourceDir : (root.reportedSource === "" ? "unset" : root.reportedSource))
@@ -1504,7 +1902,6 @@ Panel {
         + " driftLine=" + (driftNote.visible ? "shown" : "hidden")
         + " push=" + (pushButton.visible ? "shown" : "hidden")
         + " hint=" + (root.suggestHint === "" ? "none" : root.suggestHint)
-        + " commitsTitle=" + root.commitsTitle()
         + " outcomeText=" + (root.resultText === "" ? "none" : root.resultText)
         + " suggesting=" + root.suggesting
         + " ignoring=" + root.ignoring + " ignorable=" + root.detail.length
@@ -1526,9 +1923,10 @@ Panel {
         + " repoDetail=" + root.repoDetail.length + " log=" + root.logLines.length
         + " recent=" + root.recentCommits.length
         + " canPush=" + (root.unpushed > 0) + " canCommit=" + (root.homeCount + root.repoCount > 0)
+        + " canPull=" + (root.behind > 0 && root.homeCount === 0)
         + " asking=" + root.asking + " where=" + root.askWhere
         + " ignoring=" + root.ignoring
-        + " entryIn=" + (messageEntry.parent === repoSection ? "repo" : "drift")
+        + " entryIn=" + (messageEntry.parent === repoSection ? "repo" : messageEntry.parent === claudeSection ? "claude" : "drift")
         + " ai=" + (root.aiCli === "" ? "none" : root.aiCli)
         + " settingsOpen=" + root.settingsOpen
         + " query=" + panel.fittedContentWidth(Style.space(420))
@@ -1551,6 +1949,9 @@ Panel {
       root.runAction("commit")
     }
     function push(): void { root.runAction("push") }
+    function pull(): void { root.runAction("pull") }
+    function scripts(): void { root.runAction("scripts") }
+    function peer(): void { root.checkPeer() }
 
     // The ignore button asks first for the same reason: `ignore` arms the
     // confirm the way a press does, `ignoreNow` carries it through.
@@ -1618,6 +2019,7 @@ Panel {
     if (registeredBar && registeredBar.unregisterClickTarget) registeredBar.unregisterClickTarget(root)
     detailProc.signal(15)
     checkProc.signal(15)
+    peerProc.signal(15)
     actionProc.signal(15)
     probeProc.signal(15)
     suggestProc.signal(15)
