@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.0-enisbu.1
+
+- Omarchy-Plugins: neue eigene Plugins ohne `.git` und Git-Plugins, die im Installationsskript
+  `run_onchange_after_omarchy-plugins.sh` fehlen, zählen als lokale Änderung der chezmoi-Seite.
+  **Sync** nimmt eigene per `chezmoi add` auf und trägt Git-Plugins mit ihrer Origin-URL ins Skript ein.
+
 ## 2.0.0-enisbu.1
 
 - Schlanke Oberfläche: in der Bar nur ein Sync-Symbol mit Akzentpunkt bei Drift, unsichtbar wenn synchron, keine Zahl.

@@ -11,7 +11,8 @@ Akzentfarbe, ohne Zahl.
 
 **Panel.** Ein Klick öffnet zwei Spalten:
 
-- **chezmoi**: alles außerhalb von `~/.claude`.
+- **chezmoi**: alles außerhalb von `~/.claude`, dazu neue Omarchy-Plugins in `~/.config/omarchy/plugins`: eigene
+  ohne `.git`, die chezmoi nicht kennt, und Git-Plugins, die in `run_onchange_after_omarchy-plugins.sh` fehlen.
 - **Claude**: alles unter `~/.claude`, also verwaltete Dateien, die hier geändert wurden, und neue Dateien in
   `~/.claude/skills`, `~/.claude/hooks` und `~/.claude/projects/<home>/memory`.
 
@@ -27,6 +28,8 @@ nennt den letzten Abgleich mit dem Remote. Einstellungen gibt es keine: Prüfung
 
 1. Lokale Änderungen übernehmen: `chezmoi add` für geänderte und neue Ziele, `chezmoi forget` für hier gelöschte.
    Vorlagen (`.tmpl`) werden nicht überschrieben, sondern am Ende als Fehler gemeldet.
+   Auf der chezmoi-Seite kommen neue eigene Plugins per `chezmoi add` dazu, neue Git-Plugins als Zeile
+   `"<id> <origin-url>"` in die Liste `plugins=(` des Installationsskripts.
 2. `git add` für die Quellpfade der Seite, Commit `chore: sync <chezmoi|claude> from <role>`,
    `git pull --rebase --autostash`, `git push`. `role` kommt aus `chezmoi execute-template '{{ .role }}'`.
 3. Eingehendes anwenden: `chezmoi apply --exclude scripts` nur für Ziele dieser Seite, die hier nicht lokal

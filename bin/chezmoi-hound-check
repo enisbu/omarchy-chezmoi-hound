@@ -83,6 +83,21 @@ done | while IFS= read -r p; do
     [ -n "$p" ] && printf 'local\tclaude\t%s\n' "${p#"$HOME"/}"
 done >>"$work/items"
 
+plugins="$HOME/.config/omarchy/plugins"
+installer="$srcdir/run_onchange_after_omarchy-plugins.sh"
+[ -d "$plugins" ] && chezmoi unmanaged -- "$plugins" 2>/dev/null | while IFS= read -r p; do
+    case "$p" in /*) ;; *) p="$HOME/$p" ;; esac
+    id=${p#"$plugins"/}
+    id=${id%%/*}
+    if [ -d "$plugins/$id/.git" ]; then
+        [ -f "$installer" ] || continue
+        grep -qF "\"$id " "$installer" && continue
+        printf 'local\tchezmoi\t%s\n' ".config/omarchy/plugins/$id"
+    else
+        printf 'local\tchezmoi\t%s\n' "${p#"$HOME"/}"
+    fi
+done >>"$work/items"
+
 if ! git -C "$srcdir" rev-parse --git-dir >/dev/null 2>&1; then
     printf 'version\t3\n'
     printf 'note\t%s ist kein Git-Repo\n' "$srcdir"

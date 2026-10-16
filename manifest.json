@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "enisbu.chezmoi-hound",
   "name": "Chezmoi Hound",
-  "version": "2.0.0-enisbu.1",
+  "version": "2.1.0-enisbu.1",
   "author": "Enis Budancamanak",
   "license": "MIT",
   "homepage": "https://github.com/enisbu/omarchy-chezmoi-hound",
